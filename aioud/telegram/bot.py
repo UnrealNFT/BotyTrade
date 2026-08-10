@@ -22,8 +22,13 @@ class TelegramBot:
 
     def __init__(self, config: Config) -> None:
         self.config = config
-        self.application = Application.builder().token(config.telegram_bot_token).build()
-        self._register_handlers()
+        self.enabled = bool(config.telegram_bot_token)
+        self.application: Application | None = None
+        if self.enabled:
+            self.application = Application.builder().token(config.telegram_bot_token).build()
+            self._register_handlers()
+        else:
+            logger.warning("TELEGRAM_BOT_TOKEN not set; Telegram bot is disabled.")
 
     def _is_authorized(self, update: Update) -> bool:
         """Only allow the configured Telegram username to control the bot."""
@@ -229,6 +234,8 @@ class TelegramBot:
         score: int,
     ) -> None:
         """Notify the group that a trade was opened."""
+        if not self.enabled or not self.application:
+            return
         emoji = "🟢" if side == "buy" else "🔴"
         text = (
             f"{emoji} *NOUVEAU TRADE — {side.upper()} {symbol}*\n\n"
@@ -264,6 +271,8 @@ class TelegramBot:
         duration_min: int = 0,
     ) -> None:
         """Notify the group that a trade was closed."""
+        if not self.enabled or not self.application:
+            return
         emoji = "🟢" if pnl_usd >= 0 else "🔴"
         text = (
             f"{emoji} *TRADE CLOS — {symbol}*\n\n"
@@ -286,6 +295,9 @@ class TelegramBot:
 
     async def send_alert(self, message: str) -> None:
         """Send a generic alert, logging failures instead of crashing."""
+        if not self.enabled or not self.application:
+            logger.info("Telegram alert (bot disabled): %s", message)
+            return
         text = message + f"\n🖥️ [Dashboard]({self._dashboard_url()})"
         try:
             await self.application.bot.send_message(
@@ -299,6 +311,8 @@ class TelegramBot:
 
     async def _send_safe(self, text: str) -> None:
         """Send a message to the configured chat, logging failures."""
+        if not self.enabled or not self.application:
+            return
         try:
             await self.application.bot.send_message(
                 chat_id=self.config.telegram_chat_id,
@@ -310,6 +324,9 @@ class TelegramBot:
 
     async def start(self) -> None:
         """Start the bot in the background."""
+        if not self.enabled or not self.application:
+            logger.info("Telegram bot is disabled, skipping start.")
+            return
         await self.application.initialize()
         await self.application.start()
         await self.application.updater.start_polling(drop_pending_updates=True)
@@ -317,6 +334,8 @@ class TelegramBot:
 
     async def stop(self) -> None:
         """Stop the bot."""
+        if not self.enabled or not self.application:
+            return
         await self.application.updater.stop()
         await self.application.stop()
         await self.application.shutdown()

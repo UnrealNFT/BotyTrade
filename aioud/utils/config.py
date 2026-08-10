@@ -54,7 +54,7 @@ class Config:
     def from_env(cls) -> "Config":
         """Load configuration from environment variables."""
         return cls(
-            telegram_bot_token=os.environ["TELEGRAM_BOT_TOKEN"],
+            telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
             telegram_chat_id=os.environ["TELEGRAM_CHAT_ID"],
             telegram_authorized_username=os.environ.get(
                 "TELEGRAM_AUTHORIZED_USERNAME", ""

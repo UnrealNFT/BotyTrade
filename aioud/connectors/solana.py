@@ -60,12 +60,22 @@ class SolanaConnector(_MintConstants):
         self.rpc_url = config.solana_rpc_url
         self.rpc = Client(self.rpc_url)
         self._fallback_index = 0
-        self.keypair = Keypair.from_base58_string(config.solana_private_key)
+        self.keypair: Keypair | None = None
+        if config.solana_private_key and config.solana_private_key not in (
+            "your_base58_private_key",
+            "",
+        ):
+            try:
+                self.keypair = Keypair.from_base58_string(config.solana_private_key)
+            except Exception as exc:
+                logger.error("Invalid SOLANA_PRIVATE_KEY: %s", exc)
+        else:
+            logger.warning("SOLANA_PRIVATE_KEY not set; real swaps disabled.")
         self.jupiter_url = config.jupiter_api_url.rstrip("/")
         logger.info(
             "SolanaConnector initialized | paper=%s | pubkey=%s | rpc=%s",
             self.paper,
-            self.keypair.pubkey(),
+            self.keypair.pubkey() if self.keypair else "NONE",
             self.rpc_url,
         )
 
@@ -134,6 +144,10 @@ class SolanaConnector(_MintConstants):
                 amount_out=amount_usd * 0.98,
                 price=1.0,
             )
+
+        if not self.keypair:
+            logger.error("Cannot execute real swap: no valid SOLANA_PRIVATE_KEY")
+            return SwapResult(success=False, error="missing private key")
 
         amount_lamports = int(amount_usd * (10**input_decimals))
         quote = self.get_price(input_mint, output_mint, amount_lamports)
