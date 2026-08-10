@@ -5,9 +5,9 @@ env/
 venv/
 ENV/
 
-# Données sensibles / runtime
-data/
-logs/
+# Données sensibles / runtime (uniquement à la racine)
+/data/
+/logs/
 *.log
 *.json
 !package.json
