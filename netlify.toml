@@ -15,4 +15,10 @@
 [[redirects]]
   from = "/"
   to = "/mockup.html"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "/*"
+  to = "/mockup.html"
   status = 200
