@@ -1,6 +1,6 @@
 [build]
   publish = "."
-  command = "echo 'static deploy'"
+  command = "bash scripts/netlify-build.sh"
 
 [build.environment]
   PYTHON_VERSION = ""
