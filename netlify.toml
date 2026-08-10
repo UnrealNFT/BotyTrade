@@ -1,6 +1,6 @@
 [build]
-  publish = "."
-  command = "bash scripts/netlify-build.sh"
+  publish = "frontend"
+  command = "bash frontend/netlify-build.sh"
 
 [build.environment]
   PYTHON_VERSION = ""
