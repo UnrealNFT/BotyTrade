@@ -55,12 +55,12 @@ class Config:
         """Load configuration from environment variables."""
         return cls(
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
-            telegram_chat_id=os.environ["TELEGRAM_CHAT_ID"],
+            telegram_chat_id=os.environ.get("TELEGRAM_CHAT_ID", ""),
             telegram_authorized_username=os.environ.get(
                 "TELEGRAM_AUTHORIZED_USERNAME", ""
             ),
-            solana_private_key=os.environ["SOLANA_PRIVATE_KEY"],
-            solana_public_key=os.environ["SOLANA_PUBLIC_KEY"],
+            solana_private_key=os.environ.get("SOLANA_PRIVATE_KEY", ""),
+            solana_public_key=os.environ.get("SOLANA_PUBLIC_KEY", ""),
             solana_rpc_url=os.environ.get(
                 "SOLANA_RPC_URL", "https://api.mainnet-beta.solana.com"
             ),
