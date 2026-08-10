@@ -2,10 +2,12 @@
 
 import asyncio
 import json
+import os
 import signal
 import sys
 
 from aiohttp import web
+from aiohttp.web_middlewares import middleware
 
 from aioud.engine.runner import TradingEngine
 from aioud.utils.config import Config
@@ -55,18 +57,31 @@ async def main() -> int:
             return web.json_response({"ok": False, "error": "token not found"}, status=404)
         return web.json_response({"ok": True, "symbol": pair.symbol, "mint": pair.mint})
 
-    app = web.Application()
+    @middleware
+    async def cors_middleware(request: web.Request, handler):
+        if request.method == "OPTIONS":
+            resp = web.Response()
+        else:
+            resp = await handler(request)
+        resp.headers["Access-Control-Allow-Origin"] = "*"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return resp
+
+    app = web.Application(middlewares=[cors_middleware])
     app.router.add_get("/api/state", state_handler)
     app.router.add_get("/api/logs", logs_handler)
     app.router.add_post("/api/watchlist/remove", watchlist_remove_handler)
     app.router.add_post("/api/watchlist/add", watchlist_add_handler)
     app.router.add_static("/", path=".", show_index=True)
 
+    host = "0.0.0.0"
+    port = int(os.environ.get("PORT", "8080"))
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "localhost", 8080)
+    site = web.TCPSite(runner, host, port)
     await site.start()
-    logger.info("Dashboard API running at http://localhost:8080/mockup.html")
+    logger.info("Dashboard API running at http://%s:%s/mockup.html", host, port)
 
     await engine.start()
 

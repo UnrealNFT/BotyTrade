@@ -1,6 +1,7 @@
 """Telegram bot for AIOud Trader."""
 
 import asyncio
+import os
 from typing import Any
 
 from telegram import Update
@@ -212,7 +213,7 @@ class TelegramBot:
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     def _dashboard_url(self) -> str:
-        return "http://localhost:8080/mockup.html"
+        return os.environ.get("DASHBOARD_URL", "http://localhost:8080/mockup.html")
 
     async def send_trade_open(
         self,

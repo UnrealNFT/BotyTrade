@@ -564,10 +564,17 @@
 
     let state = {};
     let nextScanSeconds = 120;
+    // Configuration côté client : laisser vide pour appels relatifs (même domaine),
+    // ou injecter l'URL Render via window.API_BASE avant ce script.
+    const API_BASE = (typeof window !== 'undefined' && window.API_BASE) || '';
+
+    async function apiFetch(path, options) {
+      return fetch(API_BASE + path, options);
+    }
 
     async function fetchState() {
       try {
-        const r = await fetch('/api/state');
+        const r = await apiFetch('/api/state');
         state = await r.json();
         updateDashboard();
       } catch (e) {
@@ -744,7 +751,7 @@
     window.removePair = async (mint, symbol) => {
       if (!confirm(`Retirer ${symbol || mint} de la watchlist ?`)) return;
       try {
-        const r = await fetch('/api/watchlist/remove', {
+        const r = await apiFetch('/api/watchlist/remove', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({mint})
@@ -765,7 +772,7 @@
       const mint = prompt('Mint address du token à ajouter :');
       if (!mint) return;
       try {
-        const r = await fetch('/api/watchlist/add', {
+        const r = await apiFetch('/api/watchlist/add', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({mint: mint.trim()})
