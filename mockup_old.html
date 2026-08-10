@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AIOud Trader - Visual Mockup</title>
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --card: #151b2b;
+      --accent: #00d1ff;
+      --green: #00ff88;
+      --red: #ff4d6d;
+      --text: #e6edf3;
+      --muted: #8b9bb4;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      padding: 40px 20px;
+    }
+    h1 {
+      text-align: center;
+      color: var(--accent);
+      font-size: 2.5rem;
+      margin-bottom: 0.2rem;
+    }
+    .subtitle {
+      text-align: center;
+      color: var(--muted);
+      margin-bottom: 40px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 24px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid rgba(0, 209, 255, 0.15);
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 0 30px rgba(0, 209, 255, 0.06);
+    }
+    .card h2 {
+      margin-top: 0;
+      color: var(--accent);
+      font-size: 1.1rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .metric {
+      display: flex;
+      justify-content: space-between;
+      padding: 10px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .metric:last-child { border-bottom: none; }
+    .value { font-weight: 600; }
+    .positive { color: var(--green); }
+    .negative { color: var(--red); }
+    .telegram {
+      background: #1a2233;
+      border-radius: 12px;
+      padding: 16px;
+      font-family: monospace;
+      font-size: 0.9rem;
+      line-height: 1.5;
+      border-left: 4px solid var(--accent);
+    }
+    .telegram .buy { color: var(--green); }
+    .telegram .sell { color: var(--red); }
+    .telegram .info { color: var(--accent); }
+    .signal {
+      display: inline-block;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      margin-right: 6px;
+    }
+    .signal-buy { background: rgba(0, 255, 136, 0.15); color: var(--green); }
+    .signal-sell { background: rgba(255, 77, 109, 0.15); color: var(--red); }
+    .indicator-bar {
+      height: 6px;
+      border-radius: 3px;
+      background: #2a3447;
+      margin-top: 8px;
+      overflow: hidden;
+    }
+    .indicator-fill {
+      height: 100%;
+      background: var(--accent);
+      width: 72%;
+    }
+  </style>
+</head>
+<body>
+  <h1>⚡ AIOud Trader</h1>
+  <p class="subtitle">Bot autonome Solana + MEXC • Signalé sur Telegram</p>
+
+  <div class="grid">
+    <!-- Dashboard -->
+    <div class="card">
+      <h2>📊 Dashboard</h2>
+      <div class="metric">
+        <span>Capital total</span>
+        <span class="value">$1,247.50</span>
+      </div>
+      <div class="metric">
+        <span>PnL aujourd'hui</span>
+        <span class="value positive">+$42.30 (+3.5%)</span>
+      </div>
+      <div class="metric">
+        <span>Positions ouvertes</span>
+        <span class="value">3</span>
+      </div>
+      <div class="metric">
+        <span>Trades aujourd'hui</span>
+        <span class="value">12</span>
+      </div>
+      <div class="metric">
+        <span>Mode</span>
+        <span class="value" style="color: var(--accent);">PAPER TRADING</span>
+      </div>
+    </div>
+
+    <!-- Signal en cours -->
+    <div class="card">
+      <h2>🎯 Signal actif</h2>
+      <div class="metric">
+        <span>Token</span>
+        <span class="value">SOL / USDC</span>
+      </div>
+      <div class="metric">
+        <span>Direction</span>
+        <span class="signal signal-buy">BUY</span>
+      </div>
+      <div class="metric">
+        <span>Score</span>
+        <span class="value">82 / 100</span>
+      </div>
+      <div class="indicator-bar"><div class="indicator-fill"></div></div>
+      <div class="metric" style="margin-top: 12px;">
+        <span>RSI</span>
+        <span class="value positive">28.4 (survente)</span>
+      </div>
+      <div class="metric">
+        <span>MACD</span>
+        <span class="value positive">Croisement haussier</span>
+      </div>
+      <div class="metric">
+        <span>Heikin-Ashi</span>
+        <span class="value positive">Tendance haussière</span>
+      </div>
+    </div>
+
+    <!-- Positions -->
+    <div class="card">
+      <h2>📈 Positions ouvertes</h2>
+      <div class="metric">
+        <span>SOL</span>
+        <span class="value positive">+4.2%</span>
+      </div>
+      <div class="metric">
+        <span>BONK</span>
+        <span class="value negative">-1.8%</span>
+      </div>
+      <div class="metric">
+        <span>JUP</span>
+        <span class="value positive">+2.1%</span>
+      </div>
+    </div>
+
+    <!-- Notification Telegram -->
+    <div class="card">
+      <h2>💬 Notification Telegram</h2>
+      <div class="telegram">
+        <span class="buy">🟢 NOUVEAU TRADE — Achat SOL</span><br/>
+        📊 Signal: RSI 28 + MACD croisement + Heikin haussier<br/>
+        💰 Entrée: <span class="info">$142.35</span><br/>
+        🎯 TP1: +3% | TP2: +6% | TP3: +12%<br/>
+        🛡️ SL: -5%<br/>
+        ⏱️ Stratégie: Scalping 5m<br/>
+        💵 Montant: $10.00 (1% capital)
+      </div>
+    </div>
+
+    <!-- Logs -->
+    <div class="card">
+      <h2>📜 Derniers événements</h2>
+      <div class="metric">
+        <span>16:18:42</span>
+        <span class="value positive">TP1 atteint JUP +3%</span>
+      </div>
+      <div class="metric">
+        <span>16:15:10</span>
+        <span class="value negative">SL touché BONK -5%</span>
+      </div>
+      <div class="metric">
+        <span>16:08:33</span>
+        <span class="value positive">Achat SOL déclenché</span>
+      </div>
+      <div class="metric">
+        <span>16:02:01</span>
+        <span class="value">Scan marché lancé</span>
+      </div>
+    </div>
+
+    <!-- Stratégies -->
+    <div class="card">
+      <h2>🧠 Stratégies</h2>
+      <div class="metric">
+        <span>Scalping 5m</span>
+        <span class="value">Actif</span>
+      </div>
+      <div class="metric">
+        <span>Trending 1h</span>
+        <span class="value">Actif</span>
+      </div>
+      <div class="metric">
+        <span>Pool Sniping</span>
+        <span class="value" style="color: var(--red);">Bientôt</span>
+      </div>
+      <div class="metric">
+        <span>MEXC Futures</span>
+        <span class="value" style="color: var(--red);">Phase 2</span>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
