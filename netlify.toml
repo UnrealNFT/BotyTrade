@@ -1,6 +1,9 @@
 [build]
   publish = "."
-  command = "echo 'No build step'"
+  command = "echo 'static deploy'"
+
+[build.environment]
+  PYTHON_VERSION = ""
 
 [[headers]]
   for = "/*"
