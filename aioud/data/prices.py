@@ -88,8 +88,9 @@ class PriceFeed:
     def _fetch_dexscreener_price(self, mint: str) -> dict[str, Any] | None:
         """Fetch current price for a token mint from DexScreener."""
         try:
-            url = f"{DEXSCREENER_BASE}/latest/dex/search"
-            response = requests.get(url, params={"q": mint}, timeout=(5, 10))
+            # Direct token endpoint is far more reliable than search for exact mints.
+            url = f"{DEXSCREENER_BASE}/latest/dex/tokens/{mint}"
+            response = requests.get(url, timeout=(5, 10))
             response.raise_for_status()
             data = response.json()
             pairs = [
@@ -135,6 +136,46 @@ class PriceFeed:
             logger.debug("CoinGecko price failed for %s: %s", mint, exc)
         return None
 
+    def _fetch_dexscreener_batch(self, mints: list[str]) -> dict[str, dict[str, Any]]:
+        """Fetch prices for many mints in a single DexScreener call.
+
+        Uses the ``/tokens/v1/solana/{addresses}`` endpoint which accepts up to
+        30 addresses and is more reliable than the search endpoint.
+        """
+        if not mints:
+            return {}
+        results: dict[str, dict[str, Any]] = {}
+        for i in range(0, len(mints), 30):
+            batch = mints[i : i + 30]
+            try:
+                url = f"{DEXSCREENER_BASE}/tokens/v1/solana/{','.join(batch)}"
+                response = requests.get(url, timeout=(5, 15))
+                response.raise_for_status()
+                data = response.json()
+                items = data if isinstance(data, list) else data.get("pairs", [])
+                pairs_by_mint: dict[str, list[dict[str, Any]]] = {}
+                for raw in items:
+                    if raw.get("chainId") != "solana":
+                        continue
+                    mint = raw.get("baseToken", {}).get("address", "")
+                    if mint not in batch:
+                        continue
+                    pairs_by_mint.setdefault(mint, []).append(raw)
+                for mint, pairs in pairs_by_mint.items():
+                    stable = [p for p in pairs if p.get("quoteToken", {}).get("symbol") in ("USDC", "USDT")]
+                    candidates = stable or pairs
+                    best = max(candidates, key=lambda p: float(p.get("liquidity", {}).get("usd") or 0))
+                    if best.get("priceUsd"):
+                        results[mint] = {
+                            "price": float(best["priceUsd"]),
+                            "volume_24h": float(best.get("volume", {}).get("h24") or 0),
+                            "liquidity_usd": float(best.get("liquidity", {}).get("usd") or 0),
+                            "source": "dexscreener",
+                        }
+            except Exception as exc:
+                logger.warning("DexScreener batch price fetch failed for batch %s: %s", batch, exc)
+        return results
+
     def fetch_price(self, mint: str) -> dict[str, Any]:
         """Fetch price for a single mint with caching and fallback."""
         data = self._cached(mint, self._fetch_dexscreener_price)
@@ -145,9 +186,25 @@ class PriceFeed:
         return data
 
     def fetch_prices(self, mints: list[str]) -> dict[str, dict[str, Any]]:
-        """Fetch prices for multiple mints (best effort)."""
+        """Fetch prices for multiple mints (best effort).
+
+        Uses DexScreener's batch endpoint first, then falls back to individual
+        fetches for any missing tokens.
+        """
         results: dict[str, dict[str, Any]] = {}
+        remaining: list[str] = []
+
+        batch_results = self._fetch_dexscreener_batch(mints)
+        now = time.time()
         for mint in mints:
+            data = batch_results.get(mint)
+            if data and data.get("price", 0) > 0:
+                self._cache[mint] = (now, data)
+                results[mint] = data
+            else:
+                remaining.append(mint)
+
+        for mint in remaining:
             try:
                 results[mint] = self.fetch_price(mint)
             except Exception as exc:

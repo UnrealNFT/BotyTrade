@@ -85,7 +85,7 @@ async def main() -> int:
 
     await engine.start()
 
-    loop_task = asyncio.create_task(engine.loop(scan_interval_minutes=2))
+    loop_task = asyncio.create_task(engine.loop(scan_interval_minutes=1))
 
     try:
         await stop_event.wait()

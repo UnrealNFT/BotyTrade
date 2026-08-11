@@ -415,6 +415,14 @@
         </div>
       </div>
 
+      <!-- AI Report -->
+      <div class="card full">
+        <h2><span class="icon">🧠</span> Rapport IA (Groq) <span class="badge" id="groq-badge">0</span> <span id="piranewz-status" class="source-tag" style="margin-left:8px;">—</span></h2>
+        <div id="groq-reports" class="panel-scroll" style="font-size:.9rem; line-height:1.55;">
+          <div class="muted">En attente du prochain rapport IA...</div>
+        </div>
+      </div>
+
       <!-- Watchlist -->
       <div class="card full">
         <h2><span class="icon">📋</span> Watchlist live <span class="badge" id="watchlist-badge">0</span> <button class="add-btn" onclick="addPair()">+ Ajouter</button></h2>
@@ -709,6 +717,36 @@
         `<div style="padding:10px; background:rgba(0,209,255,0.07); border-radius:10px; border-left:3px solid var(--accent-2); margin-bottom:8px;">${m.text}</div>`
       ).join('');
       tgFeed.scrollTop = tgFeed.scrollHeight;
+
+      // AI reports
+      const reports = state.groq_reports || [];
+      const piranewzSentiment = state.piranewz_sentiment || {};
+      document.getElementById('groq-badge').textContent = reports.length;
+      const piranewzOverall = piranewzSentiment.overall || 'neutral';
+      const pzEmoji = piranewzOverall === 'bullish' ? '🐂' : piranewzOverall === 'bearish' ? '🐻' : '😐';
+      document.getElementById('piranewz-status').textContent = state.piranewz_configured ? `${pzEmoji} Piranewz ${piranewzOverall.toUpperCase()}` : '📰 Piranewz OFF';
+      const reportsEl = document.getElementById('groq-reports');
+      if (reports.length === 0) {
+        reportsEl.innerHTML = '<div class="muted">En attente du prochain rapport IA...</div>';
+      } else {
+        reportsEl.innerHTML = reports.slice().reverse().map(r => {
+          const buys = (r.buy_suggestions || []).map(s => `<span class="source-tag" style="background:rgba(0,255,136,0.15);color:var(--green);">${s.symbol} ${s.confidence || 0}%</span>`).join(' ');
+          const sells = (r.sell_suggestions || []).map(s => `<span class="source-tag" style="background:rgba(255,56,96,0.15);color:var(--red);">${s.symbol} ${s.confidence || 0}%</span>`).join(' ');
+          const holds = (r.hold_suggestions || []).map(s => `<span class="source-tag" style="background:rgba(250,204,21,0.15);color:var(--gold);">${s.symbol} ${s.confidence || 0}%</span>`).join(' ');
+          const pz = r.piranewz_sentiment || {};
+          const pzCounts = pz.counts || {};
+          return `
+          <div style="padding:12px; background:rgba(168,85,247,0.07); border-radius:12px; border-left:3px solid var(--accent-3); margin-bottom:10px;">
+            <div style="font-family:'Orbitron',sans-serif; font-size:.78rem; color:var(--accent-3); margin-bottom:6px;">${r.time} — ${r.summary}</div>
+            <div style="color:var(--muted); margin-bottom:8px;">${r.reasoning || ''}</div>
+            ${buys ? `<div style="margin-bottom:6px;">🟢 ${buys}</div>` : ''}
+            ${sells ? `<div style="margin-bottom:6px;">🔴 ${sells}</div>` : ''}
+            ${holds ? `<div>🟡 ${holds}</div>` : ''}
+            ${r.news_count || pzCounts.bullish != null ? `<div style="margin-top:8px; font-size:.75rem; color:var(--muted);">📰 ${r.news_count || 0} actualité(s) | Piranewz: 🐂${pzCounts.bullish || 0} 🐻${pzCounts.bearish || 0} 😐${pzCounts.neutral || 0}</div>` : ''}
+          </div>`;
+        }).join('');
+        reportsEl.scrollTop = reportsEl.scrollHeight;
+      }
 
       // Chart
       if (!chartSymbol && watchlist[0]) chartSymbol = watchlist[0].symbol;

@@ -25,8 +25,19 @@ class TelegramBot:
         self.enabled = bool(config.telegram_bot_token)
         self.application: Application | None = None
         if self.enabled:
-            self.application = Application.builder().token(config.telegram_bot_token).build()
-            self._register_handlers()
+            # Safety check: never post AIOud alerts into the Piranewz channel.
+            piranewz_channel = (config.piranewz_channel or "").lstrip("@").lower()
+            chat_id = str(config.telegram_chat_id or "").lstrip("@").lower()
+            if piranewz_channel and chat_id == piranewz_channel:
+                logger.error(
+                    "TELEGRAM_CHAT_ID (%s) is the same as PIRANEWZ_CHANNEL. "
+                    "AIOud alerts must go to a separate chat/group, not Piranewz.",
+                    config.telegram_chat_id,
+                )
+                self.enabled = False
+            else:
+                self.application = Application.builder().token(config.telegram_bot_token).build()
+                self._register_handlers()
         else:
             logger.warning("TELEGRAM_BOT_TOKEN not set; Telegram bot is disabled.")
 
@@ -278,10 +289,9 @@ class TelegramBot:
             f"{emoji} *TRADE CLOS — {symbol}*\n\n"
             f"💰 Entrée: `{entry_price:.6f}`\n"
             f"💰 Sortie: `{exit_price:.6f}`\n"
-            f"📈 PnL: *{pnl_pct:+.2f}%* (*${pnl_usd:+.2f}*)\n"
-            f"⏱️ Durée: {duration_min} min\n"
-            f"🎯 Raison: {reason}\n"
-            f"🖥️ [Dashboard]({self._dashboard_url()})"
+            f"📊 PnL: `{pnl_pct:+.2f}%` / `${pnl_usd:+.2f}`\n"
+            f"⏱️ Durée: `{duration_min} min`\n"
+            f"📝 Raison: `{reason}`"
         )
         try:
             await self.application.bot.send_message(
@@ -308,6 +318,35 @@ class TelegramBot:
             )
         except Exception as exc:
             logger.warning("Failed to send Telegram alert: %s", exc)
+
+    async def send_manual_signal(self, signal) -> None:
+        """Broadcast a manual CEX signal to Telegram."""
+        if not self.enabled or not self.application:
+            return
+        emoji = "🟢" if signal.confidence >= 70 else "🟡"
+        text = (
+            f"{emoji} *SIGNAL MANUEL — {signal.symbol}*\n\n"
+            f"💰 Prix actuel: `{signal.current_price:.8f}`\n"
+            f"🎯 Buy limit: `{signal.buy_limit:.8f}`\n"
+            f"🎯 TP1: `{signal.tp1:.8f}`\n"
+            f"🎯 TP2: `{signal.tp2:.8f}`\n"
+            f"🎯 TP3: `{signal.tp3:.8f}`\n"
+            f"🛡️ SL: `{signal.sl:.8f}`\n"
+            f"⭐ Confiance: `{signal.confidence}%`\n"
+            f"📊 Sentiment: `{signal.sentiment}`\n"
+            f"🏦 Exchange suggéré: `{signal.exchange_hint}`\n"
+            f"💡 Raison: _{signal.reason}_\n\n"
+            f"⚠️ Signal manuel uniquement — exécute toi-même si tu veux."
+        )
+        try:
+            await self.application.bot.send_message(
+                chat_id=self.config.telegram_chat_id,
+                text=text,
+                parse_mode="Markdown",
+                disable_web_page_preview=True,
+            )
+        except Exception as exc:
+            logger.warning("Failed to send Telegram manual signal: %s", exc)
 
     async def _send_safe(self, text: str) -> None:
         """Send a message to the configured chat, logging failures."""

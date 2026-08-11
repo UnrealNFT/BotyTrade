@@ -1,13 +1,20 @@
 """Main trading loop: scan, sample prices, generate signals, execute trades."""
 
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 from aioud.connectors.solana import SolanaConnector
+from aioud.data.multi_asset_prices import MultiAssetPriceFeed
 from aioud.data.prices import PriceFeed
 from aioud.data.scanner import SolanaScanner, TokenPair
 from aioud.data.watchlist_store import WatchlistStore
+from aioud.llm.groq_reporter import GroqReporter
+from aioud.llm.multi_asset_reporter import MultiAssetReporter
+from aioud.llm.piranewz_client import PiranewzClient
+from aioud.llm.piranewz_tg_reader import PiranewzTelegramReader
 from aioud.risk.manager import RiskManager
 from aioud.strategies.scalper import SolanaScalper
 from aioud.telegram.bot import TelegramBot
@@ -19,6 +26,8 @@ logger = get_logger(__name__)
 
 class TradingEngine:
     """Autonomous trading engine for Solana tokens."""
+
+    MAX_WATCHLIST_SIZE = 100
 
     def __init__(self, config: Config) -> None:
         self.config = config
@@ -46,7 +55,8 @@ class TradingEngine:
             pair.mint: SolanaScalper(symbol=f"{pair.symbol}/{pair.quote_symbol}")
             for pair in self.watchlist
         }
-        self._removed_mints: set[str] = set()
+        self._removed_mints_path = Path("data/removed_mints.json")
+        self._removed_mints: set[str] = self._load_removed_mints()
         self.running = False
         self.recent_evaluations: dict[str, dict[str, Any]] = {}
         self.logs: list[dict[str, Any]] = []
@@ -56,11 +66,26 @@ class TradingEngine:
         self._last_sol_balance: float = 0.0
         self._last_usdc_balance: float = 0.0
         self._cached_sol_price_usd: float = 77.0
+        self.groq_reporter = GroqReporter(api_key=config.groq_api_key)
+        self.piranewz = PiranewzClient(api_url=config.piranewz_api_url, api_key=config.piranewz_api_key)
+        self.piranewz_reader = PiranewzTelegramReader(config)
+        self.multi_asset_feed = MultiAssetPriceFeed(
+            coingecko_api_key=config.coingecko_api_key,
+            cmc_api_key=config.coinmarketcap_api_key,
+        )
+        self.multi_asset_reporter = MultiAssetReporter(
+            api_key=config.groq_api_key,
+            price_feed=self.multi_asset_feed,
+        )
+        self._last_groq_report_cycle: int = 0
+        self.groq_reports: list[dict[str, Any]] = []
+        self.manual_signals: list[dict[str, Any]] = []
 
     async def start(self) -> None:
         """Start Telegram bot and initialize watchlist in the background."""
         self.telegram._set_engine(self)
         await self.telegram.start()
+        await self.piranewz_reader.start()
         self.running = True
         # Start watchlist refresh in background so Telegram/dashboard stay responsive.
         if self.watchlist:
@@ -74,6 +99,7 @@ class TradingEngine:
     async def stop(self) -> None:
         """Stop the engine gracefully."""
         self.running = False
+        await self.piranewz_reader.stop()
         await self.telegram.send_alert("🛑 *AIOud Trader* arrêté.")
         await self.telegram.stop()
 
@@ -90,16 +116,15 @@ class TradingEngine:
             scanned = await asyncio.to_thread(
                 self.scanner.build_watchlist, alert_callback=_capture_alert
             )
-            # Merge persisted + scanned, preserve manually added pairs, honor removals.
+            # Merge persisted + scanned, preserve manually added pairs, honor removals,
+            # and refresh metadata for tokens that are rediscovered.
             merged: dict[str, TokenPair] = {p.mint: p for p in self.watchlist if p.mint not in self._removed_mints}
             for pair in scanned:
-                if pair.mint not in self._removed_mints and pair.mint not in merged:
-                    merged[pair.mint] = pair
-            self.watchlist = sorted(
-                merged.values(),
-                key=lambda p: (self.scanner._score_token(p), p.volume_24h),
-                reverse=True,
-            )[: self.scanner.max_pairs_per_scan]
+                if pair.mint in self._removed_mints:
+                    continue
+                # Update metadata if the token already exists, otherwise add it.
+                merged[pair.mint] = pair
+            self.watchlist = self._sort_and_cap_watchlist(merged.values())
             self.strategies = {
                 pair.mint: SolanaScalper(symbol=f"{pair.symbol}/{pair.quote_symbol}")
                 for pair in self.watchlist
@@ -121,6 +146,202 @@ class TradingEngine:
         except Exception as exc:
             logger.error("Watchlist refresh failed: %s", exc)
             await self.telegram.send_alert(f"⚠️ Erreur refresh watchlist: {exc}")
+
+    def _sort_and_cap_watchlist(self, pairs) -> list[TokenPair]:
+        """Sort watchlist by score/volume and enforce the max size."""
+        sorted_pairs = sorted(
+            pairs,
+            key=lambda p: (self.scanner._score_token(p), p.volume_24h),
+            reverse=True,
+        )
+        capped = sorted_pairs[: self.MAX_WATCHLIST_SIZE]
+        if len(sorted_pairs) > self.MAX_WATCHLIST_SIZE:
+            dropped = [p.symbol for p in sorted_pairs[self.MAX_WATCHLIST_SIZE :]]
+            logger.warning(
+                "Watchlist capped at %s tokens; dropped: %s",
+                self.MAX_WATCHLIST_SIZE,
+                ", ".join(dropped[:10]),
+            )
+        return capped
+
+    async def _run_groq_report(self) -> None:
+        """Generate a Groq situation report every 10 minutes and act on buy ideas."""
+        try:
+            open_positions = []
+            for pos in self.risk.positions.values():
+                try:
+                    price_data = await asyncio.to_thread(self.feed.fetch_price, pos.mint)
+                    current_price = price_data["price"]
+                except Exception:
+                    current_price = pos.entry_price
+                open_positions.append(
+                    {
+                        "symbol": pos.symbol,
+                        "mint": pos.mint,
+                        "entry": pos.entry_price,
+                        "current_price": current_price,
+                        "amount": pos.amount,
+                        "tp1": pos.tp1,
+                        "tp2": pos.tp2,
+                        "tp3": pos.tp3,
+                        "sl": pos.sl,
+                        "unrealized_pnl_pct": pos.pnl_pct(current_price),
+                    }
+                )
+
+            # Enrich prompt with Piranewz news for tracked symbols.
+            symbols = [p.symbol for p in self.watchlist[:30]]
+            try:
+                news_articles = await asyncio.to_thread(
+                    self.piranewz.fetch_news, symbols=symbols, limit=10, hours=24
+                )
+            except Exception:
+                news_articles = []
+
+            piranewz_sentiment = self.piranewz_reader.get_sentiment_summary(hours=24)
+
+            watchlist_state = [
+                {
+                    "symbol": p.symbol,
+                    "mint": p.mint,
+                    "price": p.price_usd,
+                    "market_cap": p.market_cap,
+                    "liquidity": p.liquidity_usd,
+                    "volume_24h": p.volume_24h,
+                    "score": self.scanner._score_token(p),
+                }
+                for p in self.watchlist
+            ]
+
+            balances = {
+                "sol_balance": self._last_sol_balance,
+                "usdc_balance": self._last_usdc_balance,
+                "sol_price_usd": self._cached_sol_price_usd,
+            }
+
+            report = await asyncio.to_thread(
+                self.groq_reporter.generate_report,
+                balances=balances,
+                open_positions=open_positions,
+                watchlist=watchlist_state,
+                recent_evaluations=self.recent_evaluations,
+                trade_history=self.risk.trade_history,
+                news_articles=news_articles,
+                piranewz_sentiment=piranewz_sentiment,
+            )
+
+            report_entry = {
+                "time": datetime.now(timezone.utc).strftime("%H:%M:%S"),
+                "summary": report.summary,
+                "reasoning": report.reasoning,
+                "buy_suggestions": report.buy_suggestions,
+                "hold_suggestions": report.hold_suggestions,
+                "sell_suggestions": report.sell_suggestions,
+                "news_count": len(news_articles),
+                "piranewz_sentiment": piranewz_sentiment,
+            }
+            self.groq_reports.append(report_entry)
+            if len(self.groq_reports) > 20:
+                self.groq_reports = self.groq_reports[-20:]
+
+            # Generate manual CEX signals for non-Solana tokens mentioned by Piranewz.
+            await self._generate_manual_signals(piranewz_sentiment)
+
+            # Build and send Telegram alert.
+            buy_lines = [
+                f"• *{s['symbol']}* (conf {s.get('confidence', 0)}%)\n_{s.get('reason', '')}_"
+                for s in report.buy_suggestions[:5]
+            ]
+            sell_lines = [
+                f"• *{s['symbol']}* (conf {s.get('confidence', 0)}%)\n_{s.get('reason', '')}_"
+                for s in report.sell_suggestions[:5]
+            ]
+            hold_lines = [
+                f"• *{s['symbol']}* (conf {s.get('confidence', 0)}%)\n_{s.get('reason', '')}_"
+                for s in report.hold_suggestions[:5]
+            ]
+            message = (
+                f"📊 *Rapport IA — {report.summary}*\n\n"
+                f"💡 *Raisonnement:*\n{report.reasoning[:400]}\n\n"
+            )
+            if buy_lines:
+                message += f"🟢 *Achats suggérés*\n" + "\n".join(buy_lines) + "\n\n"
+            if sell_lines:
+                message += f"🔴 *Ventes suggérées*\n" + "\n".join(sell_lines) + "\n\n"
+            if hold_lines:
+                message += f"🟡 *Hold*\n" + "\n".join(hold_lines) + "\n\n"
+
+            await self.telegram.send_alert(message)
+            logger.info("Groq report sent: %s", report.summary)
+
+            # Act on high-confidence buy suggestions already in watchlist and Solana-compatible.
+            watchlist_symbols = {p.symbol.upper(): p for p in self.watchlist}
+            for suggestion in report.buy_suggestions:
+                symbol = suggestion.get("symbol", "").upper()
+                confidence = suggestion.get("confidence", 0)
+                if confidence < 70:
+                    continue
+                pair = watchlist_symbols.get(symbol)
+                if not pair or pair.mint in self.risk.positions:
+                    continue
+                evaluation = await self._evaluate_pair(pair)
+                if evaluation and evaluation["signal"] == "buy" and evaluation["score"] >= 40:
+                    reason = f"IA+tech: {suggestion.get('reason', 'signal IA')}"
+                    await self._open_position(pair, evaluation["price"], evaluation["score"], reason)
+                    logger.info("Groq-triggered buy for %s", pair.symbol)
+        except Exception as exc:
+            logger.warning("Groq report cycle failed: %s", exc)
+            await self.telegram.send_alert(f"⚠️ Rapport IA indisponible: {exc}")
+
+    async def _generate_manual_signals(self, piranewz_sentiment: dict[str, Any]) -> None:
+        """Generate and broadcast manual CEX signals for non-Solana tokens."""
+        if not self.config.manual_signal_enabled:
+            return
+        try:
+            symbol_sentiment = piranewz_sentiment.get("symbol_sentiment", {})
+            recent_signals = piranewz_sentiment.get("signals", [])
+            if not symbol_sentiment:
+                return
+            signals = await asyncio.to_thread(
+                self.multi_asset_reporter.generate_signals,
+                symbol_sentiment=symbol_sentiment,
+                recent_signals=recent_signals,
+                min_confidence=self.config.manual_signal_min_confidence,
+            )
+            self.manual_signals = [s.__dict__ for s in signals]
+            for signal in signals[:5]:
+                await self.telegram.send_manual_signal(signal)
+                logger.info(
+                    "Manual signal %s: buy_limit=%.8f TP1=%.8f SL=%.8f conf=%s",
+                    signal.symbol,
+                    signal.buy_limit,
+                    signal.tp1,
+                    signal.sl,
+                    signal.confidence,
+                )
+        except Exception as exc:
+            logger.warning("Manual signal generation failed: %s", exc)
+
+    def _load_removed_mints(self) -> set[str]:
+        """Load the persisted set of manually removed mints."""
+        if not self._removed_mints_path.exists():
+            return set()
+        try:
+            with self._removed_mints_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+            return set(data) if isinstance(data, list) else set()
+        except Exception as exc:
+            logger.warning("Failed to load removed mints: %s", exc)
+            return set()
+
+    def _save_removed_mints(self) -> None:
+        """Persist the set of manually removed mints."""
+        try:
+            self._removed_mints_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._removed_mints_path.open("w", encoding="utf-8") as f:
+                json.dump(sorted(self._removed_mints), f, indent=2)
+        except Exception as exc:
+            logger.warning("Failed to save removed mints: %s", exc)
 
     def _log(self, level: str, message: str) -> None:
         """Store a recent log entry for the dashboard."""
@@ -144,11 +365,7 @@ class TradingEngine:
         if pair.mint not in {p.mint for p in self.watchlist}:
             self.watchlist.append(pair)
             self.strategies[pair.mint] = SolanaScalper(symbol=f"{pair.symbol}/{pair.quote_symbol}")
-            self.watchlist = sorted(
-                self.watchlist,
-                key=lambda p: (self.scanner._score_token(p), p.volume_24h),
-                reverse=True,
-            )[: self.scanner.max_pairs_per_scan]
+            self.watchlist = self._sort_and_cap_watchlist(self.watchlist)
             self.watchlist_store.save(self.watchlist)
             logger.info("Manually added pair: %s (%s)", pair.symbol, pair.mint)
         return pair
@@ -159,16 +376,18 @@ class TradingEngine:
         self.watchlist = [p for p in self.watchlist if p.mint != mint]
         self.strategies.pop(mint, None)
         self._removed_mints.add(mint)
+        self._save_removed_mints()
         self.watchlist_store.save(self.watchlist)
         removed = len(self.watchlist) < before or self.watchlist_store.remove(mint)
         if removed:
             logger.info("Removed pair: %s", mint)
         return removed
 
-    async def _evaluate_pair(self, pair: TokenPair) -> dict[str, Any] | None:
+    async def _evaluate_pair(self, pair: TokenPair, candles: list[dict[str, Any]] | None = None) -> dict[str, Any] | None:
         """Update candles and check for a trading signal."""
         try:
-            candles = await asyncio.to_thread(self.feed.snapshot_and_build, pair.mint)
+            if candles is None:
+                candles = await asyncio.to_thread(self.feed.snapshot_and_build, pair.mint)
             min_candles = SolanaScalper.MIN_CANDLES
             if len(candles) < min_candles:
                 msg = f"Evaluation {pair.symbol}: pas assez de bougies ({len(candles)}/{min_candles})"
@@ -403,11 +622,17 @@ class TradingEngine:
                 logger.info("Force paper test trade executed for %s", first.symbol)
 
         evaluated = 0
+        # Snapshot all watchlist prices in one batch before evaluating signals.
+        mints_to_evaluate = [p.mint for p in self.watchlist if p.mint not in self.risk.positions]
+        if mints_to_evaluate:
+            await asyncio.to_thread(self.feed.snapshot_batch, mints_to_evaluate)
+
         for pair in self.watchlist:
             if pair.mint in self.risk.positions:
                 continue  # Already in a position.
 
-            evaluation = await self._evaluate_pair(pair)
+            candles = self.feed.get_candles(pair.mint)
+            evaluation = await self._evaluate_pair(pair, candles)
             evaluated += 1
             if not evaluation:
                 continue
@@ -504,6 +729,11 @@ class TradingEngine:
             "trade_history": self.risk.trade_history[-20:],
             "logs": self.logs[-50:],
             "telegram": self.telegram_messages[-20:],
+            "groq_reports": self.groq_reports[-5:],
+            "piranewz_configured": bool(self.config.piranewz_api_url) or self.piranewz_reader.enabled,
+            "piranewz_sentiment": self.piranewz_reader.get_sentiment_summary(hours=24),
+            "manual_signals_enabled": self.config.manual_signal_enabled,
+            "manual_signals": self.manual_signals[-10:],
         }
         return self._clean_state_value(state)
 
@@ -519,6 +749,11 @@ class TradingEngine:
                 logger.exception("Trading cycle error: %s", exc)
                 await self.telegram.send_alert(f"⚠️ Erreur cycle: {exc}")
 
+            # Every 10 cycles (10 minutes at 1m interval), generate a Groq report.
+            if cycle_count % 10 == 0 and cycle_count != self._last_groq_report_cycle:
+                self._last_groq_report_cycle = cycle_count
+                await self._run_groq_report()
+
             # Sleep in small chunks so stop_event remains responsive and we log liveness.
             total_sleep = scan_interval_minutes * 60
             chunk = 10
@@ -528,5 +763,5 @@ class TradingEngine:
                 await asyncio.sleep(chunk)
 
             # Refresh watchlist every 12 minutes to discover new tokens faster.
-            if cycle_count % 6 == 0:
+            if cycle_count % 12 == 0:
                 await self._refresh_watchlist()

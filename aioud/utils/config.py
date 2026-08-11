@@ -44,6 +44,18 @@ class Config:
     # Groq
     groq_api_key: str
 
+    # Piranewz
+    piranewz_api_url: str
+    piranewz_api_key: str
+    piranewz_channel: str
+    piranewz_extra_tickers: str
+
+    # Multi-asset / manual signals (CEX prices)
+    coingecko_api_key: str
+    coinmarketcap_api_key: str
+    manual_signal_min_confidence: int
+    manual_signal_enabled: bool
+
     # Testing
     force_paper_test_trade: bool
 
@@ -90,6 +102,15 @@ class Config:
             ),
             moralis_api_key=os.environ.get("MORALIS_API_KEY", ""),
             groq_api_key=os.environ.get("GROQ_API_KEY", ""),
+            piranewz_api_url=os.environ.get("PIRANEWZ_API_URL", ""),
+            piranewz_api_key=os.environ.get("PIRANEWZ_API_KEY", ""),
+            piranewz_channel=os.environ.get("PIRANEWZ_CHANNEL", "@PIRANEWZ"),
+            piranewz_extra_tickers=os.environ.get("PIRANEWZ_EXTRA_TICKERS", ""),
+            coingecko_api_key=os.environ.get("COINGECKO_API_KEY", ""),
+            coinmarketcap_api_key=os.environ.get("COINMARKETCAP_API_KEY", ""),
+            manual_signal_min_confidence=int(os.environ.get("MANUAL_SIGNAL_MIN_CONFIDENCE", "50")),
+            manual_signal_enabled=os.environ.get("MANUAL_SIGNAL_ENABLED", "true").lower()
+            in ("1", "true", "yes"),
             force_paper_test_trade=os.environ.get("FORCE_PAPER_TEST_TRADE", "false").lower()
             in ("1", "true", "yes"),
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
