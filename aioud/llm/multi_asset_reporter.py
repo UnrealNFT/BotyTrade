@@ -45,7 +45,7 @@ class MultiAssetReporter:
     DEFAULT_SL_PCT = 0.05
     DEFAULT_BUY_LIMIT_DISCOUNT_PCT = 0.005  # buy limit 0.5% below current price
 
-    def __init__(self, api_key: str, price_feed: MultiAssetPriceFeed | None = None, model: str = "llama3-70b-8192") -> None:
+    def __init__(self, api_key: str, price_feed: MultiAssetPriceFeed | None = None, model: str = "llama-3.1-70b-versatile") -> None:
         self.api_key = api_key
         self.model = model
         self.price_feed = price_feed or MultiAssetPriceFeed()
@@ -185,9 +185,12 @@ class MultiAssetReporter:
                     ],
                     "temperature": 0.3,
                     "max_tokens": 600,
+                    "response_format": {"type": "json_object"},
                 },
                 timeout=(10, 60),
             )
+            if response.status_code == 400:
+                logger.warning("Groq 400 for manual signal %s: %s", symbol, response.text[:500])
             response.raise_for_status()
             raw = response.json()["choices"][0]["message"]["content"] or ""
             import json

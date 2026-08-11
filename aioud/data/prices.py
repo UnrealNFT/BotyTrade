@@ -141,15 +141,20 @@ class PriceFeed:
 
         Uses the ``/tokens/v1/solana/{addresses}`` endpoint which accepts up to
         30 addresses and is more reliable than the search endpoint.
+        Rate-limited to avoid 429 errors from DexScreener.
         """
         if not mints:
             return {}
         results: dict[str, dict[str, Any]] = {}
-        for i in range(0, len(mints), 30):
-            batch = mints[i : i + 30]
+        for i in range(0, len(mints), 20):
+            batch = mints[i : i + 20]
             try:
                 url = f"{DEXSCREENER_BASE}/tokens/v1/solana/{','.join(batch)}"
                 response = requests.get(url, timeout=(5, 15))
+                if response.status_code == 429:
+                    logger.warning("DexScreener rate limit hit, backing off")
+                    time.sleep(1.5)
+                    response = requests.get(url, timeout=(5, 15))
                 response.raise_for_status()
                 data = response.json()
                 items = data if isinstance(data, list) else data.get("pairs", [])
@@ -172,6 +177,8 @@ class PriceFeed:
                             "liquidity_usd": float(best.get("liquidity", {}).get("usd") or 0),
                             "source": "dexscreener",
                         }
+                # DexScreener free tier: small delay between batches.
+                time.sleep(0.3)
             except Exception as exc:
                 logger.warning("DexScreener batch price fetch failed for batch %s: %s", batch, exc)
         return results

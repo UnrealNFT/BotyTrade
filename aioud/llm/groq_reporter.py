@@ -28,7 +28,7 @@ class GroqReporter:
 
     GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-    def __init__(self, api_key: str, model: str = "llama3-70b-8192") -> None:
+    def __init__(self, api_key: str, model: str = "llama-3.1-70b-versatile") -> None:
         self.api_key = api_key
         self.model = model
 
@@ -232,9 +232,17 @@ class GroqReporter:
                     ],
                     "temperature": 0.4,
                     "max_tokens": 1200,
+                    "response_format": {"type": "json_object"},
                 },
                 timeout=(10, 60),
             )
+            if response.status_code == 400:
+                logger.warning(
+                    "Groq 400 response: %s | model=%s | prompt_len=%s",
+                    response.text[:500],
+                    self.model,
+                    len(prompt),
+                )
             response.raise_for_status()
             data = response.json()
             raw = data["choices"][0]["message"]["content"] or ""
