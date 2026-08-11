@@ -106,6 +106,7 @@ class Config:
             piranewz_api_key=os.environ.get("PIRANEWZ_API_KEY", ""),
             piranewz_channel=os.environ.get("PIRANEWZ_CHANNEL", "@PIRANEWZ"),
             piranewz_extra_tickers=os.environ.get("PIRANEWZ_EXTRA_TICKERS", ""),
+            # Default: no HTTP Piranewz API configured, Telegram listener stays disabled.
             coingecko_api_key=os.environ.get("COINGECKO_API_KEY", ""),
             coinmarketcap_api_key=os.environ.get("COINMARKETCAP_API_KEY", ""),
             manual_signal_min_confidence=int(os.environ.get("MANUAL_SIGNAL_MIN_CONFIDENCE", "50")),

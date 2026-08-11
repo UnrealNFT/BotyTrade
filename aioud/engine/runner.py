@@ -68,7 +68,11 @@ class TradingEngine:
         self._cached_sol_price_usd: float = 77.0
         self.groq_reporter = GroqReporter(api_key=config.groq_api_key)
         self.piranewz = PiranewzClient(api_url=config.piranewz_api_url, api_key=config.piranewz_api_key)
+        # Piranewz Telegram listener disabled by default to avoid getUpdates conflicts.
+        # Use PIRANEWZ_API_URL to fetch sentiment/news from the external Piranewz API.
         self.piranewz_reader = PiranewzTelegramReader(config)
+        if not config.piranewz_api_url:
+            self.piranewz_reader.enabled = False
         self.multi_asset_feed = MultiAssetPriceFeed(
             coingecko_api_key=config.coingecko_api_key,
             cmc_api_key=config.coinmarketcap_api_key,
@@ -85,7 +89,10 @@ class TradingEngine:
         """Start Telegram bot and initialize watchlist in the background."""
         self.telegram._set_engine(self)
         await self.telegram.start()
-        await self.piranewz_reader.start()
+        if self.piranewz_reader.enabled:
+            await self.piranewz_reader.start()
+        else:
+            logger.info("Piranewz Telegram reader disabled; using HTTP client only.")
         self.running = True
         # Start watchlist refresh in background so Telegram/dashboard stay responsive.
         if self.watchlist:
@@ -99,7 +106,8 @@ class TradingEngine:
     async def stop(self) -> None:
         """Stop the engine gracefully."""
         self.running = False
-        await self.piranewz_reader.stop()
+        if self.piranewz_reader.enabled:
+            await self.piranewz_reader.stop()
         await self.telegram.send_alert("🛑 *AIOud Trader* arrêté.")
         await self.telegram.stop()
 
@@ -198,7 +206,10 @@ class TradingEngine:
             except Exception:
                 news_articles = []
 
-            piranewz_sentiment = self.piranewz_reader.get_sentiment_summary(hours=24)
+            if self.piranewz_reader.enabled:
+                piranewz_sentiment = self.piranewz_reader.get_sentiment_summary(hours=24)
+            else:
+                piranewz_sentiment = {"overall": "neutral", "counts": {"bullish": 0, "bearish": 0, "neutral": 0}, "symbol_sentiment": {}, "signals": []}
 
             watchlist_state = [
                 {
