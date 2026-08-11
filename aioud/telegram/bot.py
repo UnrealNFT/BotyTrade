@@ -68,25 +68,31 @@ class TelegramBot:
             "watchlist": self._cmd_watchlist,
             "chatid": self._cmd_chatid,
         }.items():
-            self.application.add_handler(CommandHandler(cmd, handler))
+            if self.application:
+                self.application.add_handler(CommandHandler(cmd, handler))
+
+    async def _reply(self, update: Update, text: str, **kwargs) -> None:
+        """Safely reply to a Telegram message."""
+        message = update.message
+        if not message:
+            logger.warning("Cannot reply: update.message is None")
+            return
+        await message.reply_text(text, parse_mode="Markdown", **kwargs)
 
     async def _deny(self, update: Update) -> None:
         user = update.effective_user
         name = f"@{user.username}" if user and user.username else "inconnu"
         logger.warning("Unauthorized Telegram access from %s", name)
-        await update.message.reply_text(
-            "🚫 Accès refusé. Ce bot est privé.",
-            parse_mode="Markdown",
-        )
+        await self._reply(update, "🚫 Accès refusé. Ce bot est privé.")
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_authorized(update):
             await self._deny(update)
             return
-        await update.message.reply_text(
+        await self._reply(
+            update,
             "⚡ *AIOud Trader* est en ligne.\n"
             "Commandes: /status /balance /pnl /positions /panic /add /remove /watchlist /chatid",
-            parse_mode="Markdown",
         )
 
     def _set_engine(self, engine) -> None:
@@ -100,12 +106,12 @@ class TelegramBot:
         mode = "PAPER" if self.config.paper_trading else "REAL"
         engine = getattr(self, "engine", None)
         open_count = len(engine.risk.positions) if engine else 0
-        await update.message.reply_text(
+        await self._reply(
+            update,
             f"🤖 Bot actif.\n"
             f"Mode: *{mode} TRADING*\n"
             f"Positions ouvertes: *{open_count}*\n"
             f"Scan en cours sur Solana.",
-            parse_mode="Markdown",
         )
 
     async def _cmd_pnl(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -114,16 +120,16 @@ class TelegramBot:
             return
         engine = getattr(self, "engine", None)
         if not engine:
-            await update.message.reply_text("📊 PnL non disponible pour le moment.")
+            await self._reply(update, "📊 PnL non disponible pour le moment.")
             return
         state = engine.get_state()
         daily_pnl = state.get("daily_pnl", 0.0) or 0.0
         unrealized = state.get("unrealized_pnl", 0.0) or 0.0
-        await update.message.reply_text(
+        await self._reply(
+            update,
             f"📊 *PnL*\n"
             f"Journalier: `${daily_pnl:+.2f}`\n"
             f"Latent: `${unrealized:+.2f}`",
-            parse_mode="Markdown",
         )
 
     async def _cmd_positions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -132,7 +138,7 @@ class TelegramBot:
             return
         engine = getattr(self, "engine", None)
         if not engine or not engine.risk.positions:
-            await update.message.reply_text("📈 Aucune position ouverte.")
+            await self._reply(update, "📈 Aucune position ouverte.")
             return
         lines = ["📈 *Positions ouvertes*"]
         for mint, pos in engine.risk.positions.items():
@@ -147,16 +153,16 @@ class TelegramBot:
                 f"• *{pos.symbol}* @ `{pos.entry_price:.8f}` | "
                 f"actuel `{price:.8f}` | PnL `{pnl:+.2f}%`"
             )
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await self._reply(update, "\n".join(lines))
 
     async def _cmd_panic(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_authorized(update):
             await self._deny(update)
             return
-        await update.message.reply_text(
+        await self._reply(
+            update,
             "🛑 *PANIC* — fermeture de toutes les positions demandée.\n"
             "(implémentation manuelle via dashboard ou redémarrage)",
-            parse_mode="Markdown",
         )
 
     async def _cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -165,15 +171,15 @@ class TelegramBot:
             return
         engine = getattr(self, "engine", None)
         if not engine:
-            await update.message.reply_text("💰 Solde non disponible pour le moment.")
+            await self._reply(update, "💰 Solde non disponible pour le moment.")
             return
         sol = engine._last_sol_balance
         usdc = engine._last_usdc_balance
-        await update.message.reply_text(
+        await self._reply(
+            update,
             f"💰 *Soldes wallet*\n"
             f"SOL: `{sol:.4f}`\n"
             f"USDC: `${usdc:.2f}`",
-            parse_mode="Markdown",
         )
 
     async def _cmd_add(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -182,22 +188,22 @@ class TelegramBot:
             return
         engine = getattr(self, "engine", None)
         if not engine:
-            await update.message.reply_text("🤖 Bot pas encore prêt.")
+            await self._reply(update, "🤖 Bot pas encore prêt.")
             return
         args = context.args
         if not args:
-            await update.message.reply_text("Usage: `/add <mint_address>`", parse_mode="Markdown")
+            await self._reply(update, "Usage: `/add <mint_address>`")
             return
         mint = args[0].strip()
         pair = await asyncio.to_thread(engine.add_pair, mint)
         if not pair:
-            await update.message.reply_text(f"❌ Impossible de trouver le token: `{mint}`", parse_mode="Markdown")
+            await self._reply(update, f"❌ Impossible de trouver le token: `{mint}`")
             return
-        await update.message.reply_text(
+        await self._reply(
+            update,
             f"✅ *{pair.symbol}* ajouté à la watchlist\n"
             f"Mint: `{mint}`\n"
             f"Prix: `${pair.price_usd:.8f}`",
-            parse_mode="Markdown",
         )
 
     async def _cmd_remove(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -206,17 +212,17 @@ class TelegramBot:
             return
         engine = getattr(self, "engine", None)
         if not engine:
-            await update.message.reply_text("🤖 Bot pas encore prêt.")
+            await self._reply(update, "🤖 Bot pas encore prêt.")
             return
         args = context.args
         if not args:
-            await update.message.reply_text("Usage: `/remove <mint_address>`", parse_mode="Markdown")
+            await self._reply(update, "Usage: `/remove <mint_address>`")
             return
         mint = args[0].strip()
         if engine.remove_pair(mint):
-            await update.message.reply_text(f"✅ Token retiré de la watchlist: `{mint}`", parse_mode="Markdown")
+            await self._reply(update, f"✅ Token retiré de la watchlist: `{mint}`")
         else:
-            await update.message.reply_text(f"ℹ️ Token non trouvé dans la watchlist: `{mint}`", parse_mode="Markdown")
+            await self._reply(update, f"ℹ️ Token non trouvé dans la watchlist: `{mint}`")
 
     async def _cmd_watchlist(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_authorized(update):
@@ -224,16 +230,16 @@ class TelegramBot:
             return
         engine = getattr(self, "engine", None)
         if not engine:
-            await update.message.reply_text("🤖 Bot pas encore prêt.")
+            await self._reply(update, "🤖 Bot pas encore prêt.")
             return
         pairs = engine.watchlist[:20]
         if not pairs:
-            await update.message.reply_text("📋 Watchlist vide.")
+            await self._reply(update, "📋 Watchlist vide.")
             return
         lines = [f"📋 *Watchlist ({len(pairs)})*"]
         for p in pairs:
             lines.append(f"• *{p.symbol}* `{p.mint}`")
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+        await self._reply(update, "\n".join(lines))
 
     async def _cmd_chatid(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Return the current chat ID so the user can configure TELEGRAM_CHAT_ID."""
@@ -241,10 +247,10 @@ class TelegramBot:
             await self._deny(update)
             return
         chat_id = update.effective_chat.id if update.effective_chat else "inconnu"
-        await update.message.reply_text(
+        await self._reply(
+            update,
             f"🆔 *Chat ID*: `{chat_id}`\n\n"
             f"Utilise cette valeur pour `TELEGRAM_CHAT_ID` dans Render.",
-            parse_mode="Markdown",
         )
 
     def _dashboard_url(self) -> str:
@@ -385,8 +391,12 @@ class TelegramBot:
         if not self.enabled or not self.application:
             logger.info("Telegram bot is disabled, skipping start.")
             return
+        if not self.application:
+            return
         await self.application.initialize()
         await self.application.start()
+        if not self.application.updater:
+            return
         await self.application.updater.start_polling(
             drop_pending_updates=True,
             poll_interval=2.0,
@@ -398,7 +408,8 @@ class TelegramBot:
         """Stop the bot."""
         if not self.enabled or not self.application:
             return
-        await self.application.updater.stop()
+        if self.application.updater:
+            await self.application.updater.stop()
         await self.application.stop()
         await self.application.shutdown()
         logger.info("Telegram bot stopped")
