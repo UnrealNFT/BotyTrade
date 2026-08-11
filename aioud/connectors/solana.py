@@ -14,6 +14,7 @@ from solders.pubkey import Pubkey
 from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 from solana.rpc.api import Client
+from solana.rpc.commitment import Confirmed
 from solana.rpc.types import TokenAccountOpts, TxOpts
 
 from aioud.utils.config import Config
@@ -78,6 +79,12 @@ class SolanaConnector(_MintConstants):
             self.keypair.pubkey() if self.keypair else "NONE",
             self.rpc_url,
         )
+
+    def _owner_pubkey(self) -> Pubkey:
+        """Return the owner's public key or raise if no keypair is configured."""
+        if self.keypair is None:
+            raise RuntimeError("No SOLANA_PRIVATE_KEY configured")
+        return self.keypair.pubkey()
 
     def _switch_rpc(self) -> None:
         """Rotate to the next fallback RPC endpoint."""
@@ -145,7 +152,7 @@ class SolanaConnector(_MintConstants):
                 price=1.0,
             )
 
-        if not self.keypair:
+        if self.keypair is None:
             logger.error("Cannot execute real swap: no valid SOLANA_PRIVATE_KEY")
             return SwapResult(success=False, error="missing private key")
 
@@ -153,9 +160,10 @@ class SolanaConnector(_MintConstants):
         quote = self.get_price(input_mint, output_mint, amount_lamports)
         logger.info("Jupiter quote received: outAmount=%s", quote.get("outAmount", "unknown"))
 
+        owner_pubkey = self._owner_pubkey()
         swap_request = {
             "quoteResponse": quote,
-            "userPublicKey": str(self.keypair.pubkey()),
+            "userPublicKey": str(owner_pubkey),
             "wrapAndUnwrapSol": True,
             "priorityFeeMicroLamports": self.config.priority_fee_micro_lamports,
         }
@@ -174,20 +182,23 @@ class SolanaConnector(_MintConstants):
         # Jupiter's response contains placeholder signatures that must be replaced.
         signed_tx = VersionedTransaction(tx.message, [self.keypair])
 
-        try:
-            sig = self.rpc.send_transaction(
-                signed_tx,
-                opts=TxOpts(skip_preflight=False, preflight_commitment="confirmed"),
-            )
-            signature = str(sig.value)
-        except Exception as exc:
-            logger.warning("RPC send_transaction failed on %s: %s", self.rpc._provider.endpoint_uri, exc)
-            self._switch_rpc()
-            sig = self.rpc.send_transaction(
-                signed_tx,
-                opts=TxOpts(skip_preflight=False, preflight_commitment="confirmed"),
-            )
-            signature = str(sig.value)
+        def _send_with_fallback(tx_to_send) -> str:
+            try:
+                sig = self.rpc.send_transaction(
+                    tx_to_send,
+                    opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed),
+                )
+                return str(sig.value)
+            except Exception as exc:
+                logger.warning("RPC send_transaction failed on %s: %s", self.rpc._provider.endpoint_uri, exc)
+                self._switch_rpc()
+                sig = self.rpc.send_transaction(
+                    tx_to_send,
+                    opts=TxOpts(skip_preflight=False, preflight_commitment=Confirmed),
+                )
+                return str(sig.value)
+
+        signature = _send_with_fallback(signed_tx)
         logger.info("Swap broadcast: %s", signature)
 
         # Wait briefly for on-chain confirmation; mark failed if not confirmed.
@@ -239,7 +250,8 @@ class SolanaConnector(_MintConstants):
     def get_balance(self) -> float:
         """Return SOL balance in lamports."""
         try:
-            resp = self.rpc.get_balance(self.keypair.pubkey())
+            owner_pubkey = self._owner_pubkey()
+            resp = self.rpc.get_balance(owner_pubkey)
             return float(resp.value) / 10**9
         except Exception as exc:
             logger.warning("RPC get_balance failed on %s: %s", self.rpc._provider.endpoint_uri, exc)
@@ -249,19 +261,26 @@ class SolanaConnector(_MintConstants):
     def get_token_balance(self, mint: str) -> float:
         """Return UI token balance for a given SPL mint."""
         try:
+            owner_pubkey = self._owner_pubkey()
             accounts = self.rpc.get_token_accounts_by_owner_json_parsed(
-                self.keypair.pubkey(),
+                owner_pubkey,
                 TokenAccountOpts(mint=Pubkey.from_string(mint)),
             ).value
             if not accounts:
                 return 0.0
             total = 0.0
             for account in accounts:
-                info = account.account.data.parsed["info"]["tokenAmount"]
-                amt = info.get("uiAmount")
-                decimals = info.get("decimals", 6)
+                parsed = account.account.data.parsed
+                if not isinstance(parsed, dict):
+                    continue
+                info = parsed.get("info", {})
+                token_amount = info.get("tokenAmount", {}) if isinstance(info, dict) else {}
+                if not isinstance(token_amount, dict):
+                    continue
+                amt = token_amount.get("uiAmount")
+                decimals = token_amount.get("decimals", 6)
                 if amt is None:
-                    raw = int(info.get("amount", 0))
+                    raw = int(token_amount.get("amount", 0))
                     amt = raw / (10 ** decimals)
                 total += float(amt)
             return total
