@@ -39,6 +39,10 @@ async def main() -> int:
     async def logs_handler(request: web.Request) -> web.Response:
         return web.json_response({"logs": engine.logs[-100:]})
 
+    async def health_handler(request: web.Request) -> web.Response:
+        """Lightweight health check for Render / load balancers."""
+        return web.json_response({"status": "ok"})
+
     async def watchlist_remove_handler(request: web.Request) -> web.Response:
         body = await request.json()
         mint = body.get("mint", "")
@@ -71,6 +75,7 @@ async def main() -> int:
     app = web.Application(middlewares=[cors_middleware])
     app.router.add_get("/api/state", state_handler)
     app.router.add_get("/api/logs", logs_handler)
+    app.router.add_get("/health", health_handler)
     app.router.add_post("/api/watchlist/remove", watchlist_remove_handler)
     app.router.add_post("/api/watchlist/add", watchlist_add_handler)
     app.router.add_static("/", path=".", show_index=True)
@@ -86,6 +91,19 @@ async def main() -> int:
     await engine.start()
 
     loop_task = asyncio.create_task(engine.loop(scan_interval_minutes=1))
+
+    # Catch unhandled exceptions in the trading loop so the process doesn't die silently.
+    async def _watch_loop_task() -> None:
+        try:
+            await loop_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.exception("Trading loop died unexpectedly: %s", exc)
+            await engine.stop()
+            raise
+
+    asyncio.create_task(_watch_loop_task())
 
     try:
         await stop_event.wait()

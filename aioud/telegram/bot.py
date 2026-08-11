@@ -137,7 +137,8 @@ class TelegramBot:
         lines = ["📈 *Positions ouvertes*"]
         for mint, pos in engine.risk.positions.items():
             try:
-                price = engine.feed.fetch_price(mint)["price"]
+                price_data = await asyncio.to_thread(engine.feed.fetch_price, mint)
+                price = price_data["price"]
                 pnl = pos.pnl_pct(price)
             except Exception:
                 price = pos.entry_price

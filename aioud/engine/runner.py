@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,7 @@ class TradingEngine:
         self.logs: list[dict[str, Any]] = []
         self.telegram_messages: list[dict[str, str]] = []
         self._paper_test_done = False
+        self._running_cycle = False
         self._last_alert: dict[str, datetime] = {}
         self._last_sol_balance: float = 0.0
         self._last_usdc_balance: float = 0.0
@@ -462,7 +464,7 @@ class TradingEngine:
         levels = self.risk.compute_exit_levels(price)
         amount_usd = self.config.trading_amount_usd
 
-        result = self.solana.buy_token(pair.mint, amount_usd)
+        result = await asyncio.to_thread(self.solana.buy_token, pair.mint, amount_usd)
         if not result.success:
             await self.telegram.send_alert(
                 f"❌ *Échec achat {pair.symbol}*\n{result.error}"
@@ -534,7 +536,9 @@ class TradingEngine:
             decision = self.risk.check_exit(mint, current_price)
 
             if decision["action"] == "close":
-                result = self.solana.sell_token(mint, position.amount * position.entry_price)
+                result = await asyncio.to_thread(
+                    self.solana.sell_token, mint, position.amount * position.entry_price
+                )
                 pnl_pct = (current_price - position.entry_price) / position.entry_price * 100
                 pnl_usd = decision["pnl_usd"]
                 duration = int((datetime.now(timezone.utc) - position.opened_at).total_seconds() / 60)
@@ -555,7 +559,7 @@ class TradingEngine:
             elif decision["action"] == "partial":
                 portion = decision.get("portion", 0.3)
                 sell_amount_usd = position.amount * position.entry_price * portion
-                self.solana.sell_token(mint, sell_amount_usd)
+                await asyncio.to_thread(self.solana.sell_token, mint, sell_amount_usd)
                 await self.telegram.send_alert(
                     f"🔒 *Partiel {position.symbol}* {decision['level'].upper()}\n"
                     f"Prix: `{current_price:.6f}` | Portion: {portion*100:.0f}%"
@@ -579,7 +583,7 @@ class TradingEngine:
         except Exception as exc:
             logger.warning("Balance check USDC failed: %s", exc)
             usdc_balance = self._last_usdc_balance
-        self._update_cached_sol_price()
+        await asyncio.to_thread(self._update_cached_sol_price)
 
         if sol_balance < self.config.min_sol_balance_for_fees:
             if self._can_alert("low_sol"):
@@ -611,54 +615,66 @@ class TradingEngine:
 
     async def run_cycle(self) -> None:
         """Run one full scan/evaluate/trade cycle."""
-        logger.info("--- Starting trading cycle ---")
-        self._log("info", "Cycle de trading démarré")
-        await self._check_balances()
-        await self._manage_open_positions()
-
-        # Optional paper test: force one fake trade on the very first cycle
-        # to validate the full pipeline (signal -> execution -> Telegram -> dashboard).
-        if self.config.force_paper_test_trade and not self._paper_test_done:
-            self._paper_test_done = True
-            first = next((p for p in self.watchlist if p.symbol == "SOL"), self.watchlist[0])
-            if first.mint not in self.risk.positions:
-                try:
-                    data = await asyncio.to_thread(self.feed.fetch_price, first.mint)
-                    price = data["price"]
-                except Exception as exc:
-                    logger.warning("Force paper test fetch failed: %s", exc)
-                    price = first.price_usd or 0.01
-                await self._open_position(first, price, 999, "TEST PAPER — pipeline validation")
-                self._log("buy", f"TEST PAPER: opened {first.symbol} @ {price}")
-                logger.info("Force paper test trade executed for %s", first.symbol)
-
+        if self._running_cycle:
+            logger.warning("Previous cycle still running, skipping this tick")
+            return
+        self._running_cycle = True
         evaluated = 0
-        # Snapshot all watchlist prices in one batch before evaluating signals.
-        mints_to_evaluate = [p.mint for p in self.watchlist if p.mint not in self.risk.positions]
-        if mints_to_evaluate:
-            await asyncio.to_thread(self.feed.snapshot_batch, mints_to_evaluate)
+        cycle_start = time.monotonic()
+        try:
+            logger.info("--- Starting trading cycle ---")
+            self._log("info", "Cycle de trading démarré")
+            await self._check_balances()
+            await self._manage_open_positions()
 
-        for pair in self.watchlist:
-            if pair.mint in self.risk.positions:
-                continue  # Already in a position.
+            # Optional paper test: force one fake trade on the very first cycle
+            # to validate the full pipeline (signal -> execution -> Telegram -> dashboard).
+            if self.config.force_paper_test_trade and not self._paper_test_done:
+                self._paper_test_done = True
+                first = next((p for p in self.watchlist if p.symbol == "SOL"), self.watchlist[0])
+                if first.mint not in self.risk.positions:
+                    try:
+                        data = await asyncio.to_thread(self.feed.fetch_price, first.mint)
+                        price = data["price"]
+                    except Exception as exc:
+                        logger.warning("Force paper test fetch failed: %s", exc)
+                        price = first.price_usd or 0.01
+                    await self._open_position(first, price, 999, "TEST PAPER — pipeline validation")
+                    self._log("buy", f"TEST PAPER: opened {first.symbol} @ {price}")
+                    logger.info("Force paper test trade executed for %s", first.symbol)
 
-            candles = self.feed.get_candles(pair.mint)
-            evaluation = await self._evaluate_pair(pair, candles)
-            evaluated += 1
-            if not evaluation:
-                continue
+            # Snapshot all watchlist prices in one batch before evaluating signals.
+            mints_to_evaluate = [p.mint for p in self.watchlist if p.mint not in self.risk.positions]
+            if mints_to_evaluate:
+                await asyncio.to_thread(self.feed.snapshot_batch, mints_to_evaluate)
 
-            signal = evaluation["signal"]
-            score = evaluation["score"]
-            details = evaluation["details"]
-            price = evaluation["price"]
+            for pair in self.watchlist:
+                if pair.mint in self.risk.positions:
+                    continue  # Already in a position.
 
-            if signal == "buy" and score >= 50:
-                reason = details.get("reason", "signal technique")
-                await self._open_position(pair, price, score, reason)
+                candles = self.feed.get_candles(pair.mint)
+                evaluation = await self._evaluate_pair(pair, candles)
+                evaluated += 1
+                if not evaluation:
+                    continue
 
-        logger.info("--- Trading cycle complete (%s pairs evaluated) ---", evaluated)
-        self._log("info", f"Cycle terminé ({evaluated} paires évaluées)")
+                signal = evaluation["signal"]
+                score = evaluation["score"]
+                details = evaluation["details"]
+                price = evaluation["price"]
+
+                if signal == "buy" and score >= 50:
+                    reason = details.get("reason", "signal technique")
+                    await self._open_position(pair, price, score, reason)
+
+            logger.info("--- Trading cycle complete (%s pairs evaluated) ---", evaluated)
+            self._log("info", f"Cycle terminé ({evaluated} paires évaluées)")
+        finally:
+            self._running_cycle = False
+            elapsed = time.monotonic() - cycle_start
+            logger.info("Trading cycle elapsed %.2fs", elapsed)
+            if elapsed > 60:
+                logger.warning("Trading cycle was slow (%.2fs); dashboard/health may have stalled", elapsed)
 
     def _clean_state_value(self, value: Any) -> Any:
         """Replace NaN/inf with None so JSON serialization works."""
@@ -758,8 +774,10 @@ class TradingEngine:
                 await self.run_cycle()
             except Exception as exc:
                 logger.exception("Trading cycle error: %s", exc)
-                await self.telegram.send_alert(f"⚠️ Erreur cycle: {exc}")
-
+                try:
+                    await self.telegram.send_alert(f"⚠️ Erreur cycle: {exc}")
+                except Exception:
+                    pass
             # Every 10 cycles (10 minutes at 1m interval), generate a Groq report.
             if cycle_count % 10 == 0 and cycle_count != self._last_groq_report_cycle:
                 self._last_groq_report_cycle = cycle_count
