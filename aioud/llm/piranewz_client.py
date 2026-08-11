@@ -72,9 +72,13 @@ class PiranewzClient:
         if not data:
             return []
 
-        items = data if isinstance(data, list) else data.get("items", data.get("articles", data.get("news", [])))
+        raw_items = data if isinstance(data, list) else data.get("items", data.get("articles", data.get("news", [])))
+        if not isinstance(raw_items, list):
+            return []
         articles: list[NewsArticle] = []
-        for item in items:
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
             try:
                 article = NewsArticle(
                     title=str(item.get("title", "")),
@@ -83,7 +87,7 @@ class PiranewzClient:
                     url=str(item.get("url", "")),
                     published_at=str(item.get("published_at", item.get("publishedAt", ""))),
                     sentiment=str(item.get("sentiment", "neutral")),
-                    symbols=item.get("symbols", item.get("tokens", [])),
+                    symbols=list(item.get("symbols", item.get("tokens", []))),
                 )
                 articles.append(article)
             except Exception:

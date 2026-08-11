@@ -232,6 +232,16 @@ class PriceFeed:
                 logger.warning("Price fetch failed for %s: %s", mint, exc)
         return results
 
+    def fetch_price(self, mint: str) -> dict[str, Any]:
+        """Fetch current price for a single mint (cached)."""
+        entry = self._cache.get(mint)
+        if entry:
+            return entry[1]
+        data = self.fetch_prices([mint]).get(mint)
+        if not data:
+            raise ValueError(f"No price data available for {mint}")
+        return data
+
     def record_snapshot(self, mint: str, price: float, volume_24h: float) -> None:
         """Store a raw price snapshot."""
         with sqlite3.connect(self.db_path) as conn:
@@ -263,7 +273,7 @@ class PriceFeed:
         )
         candles = [
             Candle(
-                timestamp=int(idx),
+                timestamp=int(idx),  # type: ignore[arg-type]
                 open=row["open"],
                 high=row["high"],
                 low=row["low"],

@@ -7,12 +7,13 @@ with a fresh recent blockhash to maximize confirmation reliability.
 import base64
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import requests
-from solders.keypair import Keypair
-from solders.pubkey import Pubkey
-from solders.signature import Signature
-from solders.transaction import VersionedTransaction
+from solders.keypair import Keypair  # type: ignore[import-not-found]
+from solders.pubkey import Pubkey  # type: ignore[import-not-found]
+from solders.signature import Signature  # type: ignore[import-not-found]
+from solders.transaction import VersionedTransaction  # type: ignore[import-not-found]
 from solana.rpc.api import Client
 from solana.rpc.commitment import Confirmed
 from solana.rpc.types import TokenAccountOpts, TxOpts
@@ -258,6 +259,20 @@ class SolanaConnector(_MintConstants):
             self._switch_rpc()
             raise
 
+    @staticmethod
+    def _to_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _to_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return default
+
     def get_token_balance(self, mint: str) -> float:
         """Return UI token balance for a given SPL mint."""
         try:
@@ -273,15 +288,19 @@ class SolanaConnector(_MintConstants):
                 parsed = account.account.data.parsed
                 if not isinstance(parsed, dict):
                     continue
-                info = parsed.get("info", {})
-                token_amount = info.get("tokenAmount", {}) if isinstance(info, dict) else {}
+                info = parsed.get("info")
+                if not isinstance(info, dict):
+                    continue
+                token_amount = info.get("tokenAmount")
                 if not isinstance(token_amount, dict):
                     continue
-                amt = token_amount.get("uiAmount")
-                decimals = int(token_amount.get("decimals", 6) or 6)
-                if amt is None:
-                    raw = int(token_amount.get("amount", 0) or 0)
+                ui_amount = token_amount.get("uiAmount")
+                decimals = self._to_int(token_amount.get("decimals"), 6)
+                if ui_amount is None:
+                    raw = self._to_int(token_amount.get("amount"), 0)
                     amt = raw / (10 ** decimals)
+                else:
+                    amt = self._to_float(ui_amount, 0.0)
                 total += float(amt)
             return total
         except Exception as exc:

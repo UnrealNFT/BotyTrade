@@ -237,6 +237,9 @@ class PiranewzTelegramReader:
         if not self.enabled or not self.application:
             logger.info("Piranewz reader is disabled (no token).")
             return
+        if not self.application.updater:
+            logger.warning("Piranewz reader updater not available.")
+            return
         await self.application.initialize()
         await self.application.start()
         await self.application.updater.start_polling(drop_pending_updates=True)
@@ -246,7 +249,8 @@ class PiranewzTelegramReader:
         """Stop the reader."""
         if not self.enabled or not self.application:
             return
-        await self.application.updater.stop()
+        if self.application.updater:
+            await self.application.updater.stop()
         await self.application.stop()
         await self.application.shutdown()
         logger.info("Piranewz Telegram reader stopped")

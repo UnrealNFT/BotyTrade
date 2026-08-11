@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import requests
@@ -152,11 +152,7 @@ class MultiAssetPrice:
     volume_24h: float
     source: str
     timestamp: float
-    extra: dict[str, Any] = None
-
-    def __post_init__(self):
-        if self.extra is None:
-            self.extra = {}
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 class MultiAssetPriceFeed:

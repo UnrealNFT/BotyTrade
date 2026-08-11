@@ -3,7 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import requests
 
@@ -113,26 +113,31 @@ class SolanaScanner:
         quote = raw.get("quoteToken", {})
         liquidity = raw.get("liquidity", {})
         volume = raw.get("volume", {})
-        profile = self._profile_meta.get(base.get("address", ""), {})
+        if not isinstance(base, dict):
+            return None
+        address = str(base.get("address", ""))
+        profile = self._profile_meta.get(address, {})
         updated_at = profile.get("updatedAt")
+        buys = self._safe_int(raw.get("txns", {}).get("h24", {}).get("buys"))
+        sells = self._safe_int(raw.get("txns", {}).get("h24", {}).get("sells"))
+        txn_count_24h = (buys or 0) + (sells or 0)
         return TokenPair(
-            symbol=base.get("symbol", "UNKNOWN"),
-            mint=base.get("address", ""),
-            quote_symbol=quote.get("symbol", ""),
-            quote_mint=quote.get("address", ""),
+            symbol=str(base.get("symbol", "UNKNOWN")),
+            mint=address,
+            quote_symbol=str(quote.get("symbol", "")) if isinstance(quote, dict) else "",
+            quote_mint=str(quote.get("address", "")) if isinstance(quote, dict) else "",
             price_usd=float(raw.get("priceUsd") or 0),
-            liquidity_usd=float(liquidity.get("usd") or 0),
-            volume_24h=float(volume.get("h24") or 0),
+            liquidity_usd=float(liquidity.get("usd") or 0) if isinstance(liquidity, dict) else 0.0,
+            volume_24h=float(volume.get("h24") or 0) if isinstance(volume, dict) else 0.0,
             market_cap=float(raw.get("marketCap") or 0),
-            dex_id=raw.get("dexId", ""),
-            pair_address=raw.get("pairAddress", ""),
-            source_endpoints=profile.get("sources", []),
-            profile_updated_at=self._parse_iso(updated_at) if updated_at else None,
-            boost_amount=profile.get("amount", 0.0),
-            total_boost_amount=profile.get("totalAmount", 0.0),
+            dex_id=str(raw.get("dexId", "")),
+            pair_address=str(raw.get("pairAddress", "")),
+            source_endpoints=cast(list[str], profile.get("sources", [])),
+            profile_updated_at=self._parse_iso(str(updated_at)) if updated_at else None,
+            boost_amount=float(profile.get("amount", 0.0) or 0.0),
+            total_boost_amount=float(profile.get("totalAmount", 0.0) or 0.0),
             price_change_24h=self._safe_float(raw.get("priceChange", {}).get("h24")),
-            txn_count_24h=self._safe_int(raw.get("txns", {}).get("h24", {}).get("buys"))
-            + self._safe_int(raw.get("txns", {}).get("h24", {}).get("sells")),
+            txn_count_24h=txn_count_24h if txn_count_24h > 0 else None,
             holders=self._safe_int(raw.get("fdv")),  # DexScreener does not expose holders; placeholder.
         )
 
@@ -179,8 +184,12 @@ class SolanaScanner:
         if data is None:
             logger.warning("Batch search failed/timeout for blue chips")
             return results
-        items = data if isinstance(data, list) else data.get("pairs", [])
+        items = data if isinstance(data, list) else (data.get("pairs", []) or [])
+        if not isinstance(items, list):
+            return results
         for raw in items:
+            if not isinstance(raw, dict):
+                continue
             pair = self._normalize(raw)
             if pair and pair.mint in results:
                 results[pair.mint].append(pair)
@@ -189,9 +198,13 @@ class SolanaScanner:
     def search(self, query: str) -> list[TokenPair]:
         """Search DexScreener for pairs matching a query."""
         data = self._get("/latest/dex/search", params={"q": query}, timeout=15)
-        pairs = data.get("pairs", [])
+        pairs = data.get("pairs", []) or []
+        if not isinstance(pairs, list):
+            pairs = []
         results: list[TokenPair] = []
         for raw in pairs:
+            if not isinstance(raw, dict):
+                continue
             pair = self._normalize(raw)
             if pair and pair.liquidity_usd >= self.min_liquidity_usd:
                 results.append(pair)
@@ -213,7 +226,10 @@ class SolanaScanner:
             data = self._get("/latest/dex/tokens/" + address, timeout=15)
         except requests.RequestException:
             return None
-        pairs = [self._normalize(p) for p in data.get("pairs", [])]
+        raw_pairs = data.get("pairs", []) or []
+        if not isinstance(raw_pairs, list):
+            return None
+        pairs = [self._normalize(p) for p in raw_pairs if isinstance(p, dict)]
         pairs = [p for p in pairs if p is not None]
         return self._prefer_stable_pair(pairs)
 
@@ -221,12 +237,18 @@ class SolanaScanner:
         """Fetch one discovery endpoint and decorate items with their source."""
         try:
             data = self._get(endpoint)
-            items = data if isinstance(data, list) else []
-            for item in items:
+            raw_items = data if isinstance(data, list) else []
+            if not isinstance(raw_items, list):
+                return []
+            items: list[dict[str, Any]] = []
+            for item in raw_items:
+                if not isinstance(item, dict):
+                    continue
                 item["_source_endpoint"] = endpoint
                 # Merge boost amount metadata if present.
                 if "amount" in item:
                     item["boost_amount"] = item["amount"]
+                items.append(item)
             return items
         except requests.RequestException as exc:
             logger.warning("Discovery endpoint %s failed: %s", endpoint, exc)
@@ -251,7 +273,13 @@ class SolanaScanner:
 
         # Preserve ordering: top boosts first, then latest boosts, then profiles.
         endpoint_rank = {ep: idx for idx, ep in enumerate(DISCOVERY_ENDPOINTS)}
-        results.sort(key=lambda item: (endpoint_rank.get(item.get("_source_endpoint"), 99), item.get("totalAmount", 0)), reverse=True)
+        results.sort(
+            key=lambda item: (
+                endpoint_rank.get(str(item.get("_source_endpoint", "")), 99),
+                float(item.get("totalAmount") or 0),
+            ),
+            reverse=True,
+        )
         return results
 
     def _resolve_pairs_parallel(self, addresses: list[str]) -> dict[str, TokenPair]:
@@ -316,7 +344,7 @@ class SolanaScanner:
         address_meta: dict[str, dict[str, Any]] = {}
         ordered_addresses: list[str] = []
         for item in raw_items:
-            address = item.get("tokenAddress") or item.get("address")
+            address = str(item.get("tokenAddress") or item.get("address") or "")
             if not address:
                 continue
             meta = address_meta.setdefault(address, {
@@ -325,7 +353,7 @@ class SolanaScanner:
                 "totalAmount": 0.0,
                 "updatedAt": item.get("updatedAt"),
             })
-            meta["sources"].add(item.get("_source_endpoint", ""))
+            meta["sources"].add(str(item.get("_source_endpoint", "")))
             meta["amount"] = max(meta["amount"], float(item.get("amount") or 0.0))
             meta["totalAmount"] = max(meta["totalAmount"], float(item.get("totalAmount") or 0.0))
             if item.get("updatedAt"):
@@ -341,10 +369,11 @@ class SolanaScanner:
         for address, pair in resolved.items():
             meta = address_meta.get(address, {})
             self._profile_meta[address] = meta
-            pair.source_endpoints = sorted(meta.get("sources", set()))
-            pair.boost_amount = meta.get("amount", 0.0)
-            pair.total_boost_amount = meta.get("totalAmount", 0.0)
-            pair.profile_updated_at = self._parse_iso(meta.get("updatedAt")) if meta.get("updatedAt") else None
+            pair.source_endpoints = cast(list[str], sorted(cast(set[str], meta.get("sources", set()))))
+            pair.boost_amount = float(meta.get("amount", 0.0) or 0.0)
+            pair.total_boost_amount = float(meta.get("totalAmount", 0.0) or 0.0)
+            updated_at = meta.get("updatedAt")
+            pair.profile_updated_at = self._parse_iso(str(updated_at)) if updated_at else None
 
             if not self._freshness_filter(pair):
                 continue
@@ -371,7 +400,7 @@ class SolanaScanner:
         address_meta: dict[str, dict[str, Any]] = {}
         ordered_addresses: list[str] = []
         for item in raw_items:
-            address = item.get("tokenAddress") or item.get("address")
+            address = str(item.get("tokenAddress") or item.get("address") or "")
             if not address:
                 continue
             meta = address_meta.setdefault(address, {
@@ -380,7 +409,7 @@ class SolanaScanner:
                 "totalAmount": 0.0,
                 "updatedAt": item.get("updatedAt"),
             })
-            meta["sources"].add(item.get("_source_endpoint", ""))
+            meta["sources"].add(str(item.get("_source_endpoint", "")))
             meta["amount"] = max(meta["amount"], float(item.get("amount") or 0.0))
             meta["totalAmount"] = max(meta["totalAmount"], float(item.get("totalAmount") or 0.0))
             if item.get("updatedAt"):
@@ -395,10 +424,11 @@ class SolanaScanner:
                 continue
             meta = address_meta.get(address, {})
             self._profile_meta[address] = meta
-            pair.source_endpoints = sorted(meta.get("sources", set()))
-            pair.boost_amount = meta.get("amount", 0.0)
-            pair.total_boost_amount = meta.get("totalAmount", 0.0)
-            pair.profile_updated_at = self._parse_iso(meta.get("updatedAt")) if meta.get("updatedAt") else None
+            pair.source_endpoints = cast(list[str], sorted(cast(set[str], meta.get("sources", set()))))
+            pair.boost_amount = float(meta.get("amount", 0.0) or 0.0)
+            pair.total_boost_amount = float(meta.get("totalAmount", 0.0) or 0.0)
+            updated_at = meta.get("updatedAt")
+            pair.profile_updated_at = self._parse_iso(str(updated_at)) if updated_at else None
 
             if pair.market_cap == 0 or pair.market_cap > self.microcap_max_mcap:
                 continue
