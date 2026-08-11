@@ -61,6 +61,7 @@ class TelegramBot:
             "add": self._cmd_add,
             "remove": self._cmd_remove,
             "watchlist": self._cmd_watchlist,
+            "chatid": self._cmd_chatid,
         }.items():
             self.application.add_handler(CommandHandler(cmd, handler))
 
@@ -79,7 +80,7 @@ class TelegramBot:
             return
         await update.message.reply_text(
             "⚡ *AIOud Trader* est en ligne.\n"
-            "Commandes: /status /balance /pnl /positions /panic /add /remove /watchlist",
+            "Commandes: /status /balance /pnl /positions /panic /add /remove /watchlist /chatid",
             parse_mode="Markdown",
         )
 
@@ -227,6 +228,18 @@ class TelegramBot:
         for p in pairs:
             lines.append(f"• *{p.symbol}* `{p.mint}`")
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+    async def _cmd_chatid(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Return the current chat ID so the user can configure TELEGRAM_CHAT_ID."""
+        if not self._is_authorized(update):
+            await self._deny(update)
+            return
+        chat_id = update.effective_chat.id if update.effective_chat else "inconnu"
+        await update.message.reply_text(
+            f"🆔 *Chat ID*: `{chat_id}`\n\n"
+            f"Utilise cette valeur pour `TELEGRAM_CHAT_ID` dans Render.",
+            parse_mode="Markdown",
+        )
 
     def _dashboard_url(self) -> str:
         return os.environ.get("DASHBOARD_URL", "http://localhost:8080/mockup.html")
