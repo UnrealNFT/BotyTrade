@@ -278,9 +278,9 @@ class SolanaConnector(_MintConstants):
                 if not isinstance(token_amount, dict):
                     continue
                 amt = token_amount.get("uiAmount")
-                decimals = token_amount.get("decimals", 6)
+                decimals = int(token_amount.get("decimals", 6) or 6)
                 if amt is None:
-                    raw = int(token_amount.get("amount", 0))
+                    raw = int(token_amount.get("amount", 0) or 0)
                     amt = raw / (10 ** decimals)
                 total += float(amt)
             return total
