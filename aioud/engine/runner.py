@@ -49,7 +49,10 @@ class TradingEngine:
             discovery_min_score=10.0,
             max_workers=2,
         )
-        self.feed = PriceFeed()
+        self.feed = PriceFeed(
+            trappist_api_url=config.trappist_api_url,
+            trappist_api_key=config.trappist_api_key,
+        )
         self.watchlist_store = WatchlistStore()
         self.watchlist: list[TokenPair] = self.watchlist_store.load()
         self.strategies: dict[str, SolanaScalper] = {

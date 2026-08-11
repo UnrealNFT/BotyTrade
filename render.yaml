@@ -32,3 +32,6 @@ services:
       # MORALIS_API_KEY
       # GROQ_API_KEY
       # DASHBOARD_URL (URL Netlify finale, ex: https://botytrade.netlify.app/mockup.html)
+      - key: TRAPPIST_API_URL
+        value: https://trappistai-backend.onrender.com
+      # TRAPPIST_API_KEY (optionnel, si tu securises /api/prices/batch)

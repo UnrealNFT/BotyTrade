@@ -56,6 +56,10 @@ class Config:
     manual_signal_min_confidence: int
     manual_signal_enabled: bool
 
+    # TrappistAI backend (optional price source to avoid DexScreener rate limits)
+    trappist_api_url: str
+    trappist_api_key: str
+
     # Testing
     force_paper_test_trade: bool
 
@@ -114,5 +118,7 @@ class Config:
             in ("1", "true", "yes"),
             force_paper_test_trade=os.environ.get("FORCE_PAPER_TEST_TRADE", "false").lower()
             in ("1", "true", "yes"),
+            trappist_api_url=os.environ.get("TRAPPIST_API_URL", ""),
+            trappist_api_key=os.environ.get("TRAPPIST_API_KEY", ""),
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
         )

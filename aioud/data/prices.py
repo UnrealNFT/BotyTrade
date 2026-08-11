@@ -33,13 +33,24 @@ class Candle:
 class PriceFeed:
     """Sample prices and maintain 1m candles for tracked tokens."""
 
-    def __init__(self, db_path: Path | None = None, interval_seconds: int = CANDLE_INTERVAL_SECONDS):
+    def __init__(
+        self,
+        db_path: Path | None = None,
+        interval_seconds: int = CANDLE_INTERVAL_SECONDS,
+        trappist_api_url: str = "",
+        trappist_api_key: str = "",
+    ):
         self.db_path = db_path or Path("data/prices.db")
         self.interval_seconds = interval_seconds
         self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
         self._cache_ttl = 5.0
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
+        self._trappist = None
+        if trappist_api_url:
+            from aioud.data.trappist_prices import TrappistPriceFeed
+
+            self._trappist = TrappistPriceFeed(trappist_api_url, trappist_api_key)
 
     def _init_db(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
@@ -186,21 +197,33 @@ class PriceFeed:
     def fetch_prices(self, mints: list[str]) -> dict[str, dict[str, Any]]:
         """Fetch prices for multiple mints (best effort).
 
-        Uses DexScreener's batch endpoint first, then falls back to individual
-        fetches for any missing tokens.
+        Uses TrappistAI backend first if configured, then DexScreener batch,
+        then individual fetches for any missing tokens.
         """
         results: dict[str, dict[str, Any]] = {}
-        remaining: list[str] = []
-
-        batch_results = self._fetch_dexscreener_batch(mints)
+        remaining: list[str] = list(mints)
         now = time.time()
-        for mint in mints:
-            data = batch_results.get(mint)
-            if data and data.get("price", 0) > 0:
-                self._cache[mint] = (now, data)
-                results[mint] = data
-            else:
-                remaining.append(mint)
+
+        if self._trappist:
+            try:
+                trappist_results = self._trappist.fetch_prices(mints)
+                for mint in list(remaining):
+                    data = trappist_results.get(mint)
+                    if data and data.get("price", 0) > 0:
+                        self._cache[mint] = (now, data)
+                        results[mint] = data
+                        remaining.remove(mint)
+            except Exception as exc:
+                logger.warning("TrappistAI price fetch failed: %s", exc)
+
+        if remaining:
+            batch_results = self._fetch_dexscreener_batch(remaining)
+            for mint in list(remaining):
+                data = batch_results.get(mint)
+                if data and data.get("price", 0) > 0:
+                    self._cache[mint] = (now, data)
+                    results[mint] = data
+                    remaining.remove(mint)
 
         for mint in remaining:
             try:
