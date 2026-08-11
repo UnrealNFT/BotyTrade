@@ -104,6 +104,9 @@ class TradingEngine:
             f"⚡ *AIOud Trader* démarré.\nMode: *{'PAPER' if self.config.paper_trading else 'REAL'}*\n"
             "Scan multi-actifs Solana actif."
         )
+        # Generate an initial Groq market report so the dashboard/context is populated.
+        if self.config.groq_api_key:
+            asyncio.create_task(self._run_groq_report())
 
     async def stop(self) -> None:
         """Stop the engine gracefully."""
@@ -132,8 +135,21 @@ class TradingEngine:
             for pair in scanned:
                 if pair.mint in self._removed_mints:
                     continue
-                # Update metadata if the token already exists, otherwise add it.
-                merged[pair.mint] = pair
+                existing = merged.get(pair.mint)
+                if existing is not None:
+                    # Refresh price/volume metadata but keep the manually added pair.
+                    existing.price_usd = pair.price_usd
+                    existing.liquidity_usd = pair.liquidity_usd
+                    existing.volume_24h = pair.volume_24h
+                    existing.market_cap = pair.market_cap
+                    existing.price_change_24h = pair.price_change_24h
+                    existing.txn_count_24h = pair.txn_count_24h
+                    existing.source_endpoints = pair.source_endpoints or existing.source_endpoints
+                    existing.boost_amount = pair.boost_amount
+                    existing.total_boost_amount = pair.total_boost_amount
+                    existing.profile_updated_at = pair.profile_updated_at
+                else:
+                    merged[pair.mint] = pair
             self.watchlist = self._sort_and_cap_watchlist(merged.values())
             self.strategies = {
                 pair.mint: SolanaScalper(symbol=f"{pair.symbol}/{pair.quote_symbol}")
