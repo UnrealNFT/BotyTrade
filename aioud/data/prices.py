@@ -153,7 +153,7 @@ class PriceFeed:
                 response = requests.get(url, timeout=(5, 15))
                 if response.status_code == 429:
                     logger.warning("DexScreener rate limit hit, backing off")
-                    time.sleep(1.5)
+                    time.sleep(2.5)
                     response = requests.get(url, timeout=(5, 15))
                 response.raise_for_status()
                 data = response.json()
@@ -174,23 +174,14 @@ class PriceFeed:
                         results[mint] = {
                             "price": float(best["priceUsd"]),
                             "volume_24h": float(best.get("volume", {}).get("h24") or 0),
-                            "liquidity_usd": float(best.get("liquidity", {}).get("usd") or 0),
+                            "liquidity_usd": float(float(best.get("liquidity", {}).get("usd") or 0)),
                             "source": "dexscreener",
                         }
-                # DexScreener free tier: small delay between batches.
-                time.sleep(0.3)
+                # DexScreener free tier: larger delay between batches to avoid 429.
+                time.sleep(1.0)
             except Exception as exc:
                 logger.warning("DexScreener batch price fetch failed for batch %s: %s", batch, exc)
         return results
-
-    def fetch_price(self, mint: str) -> dict[str, Any]:
-        """Fetch price for a single mint with caching and fallback."""
-        data = self._cached(mint, self._fetch_dexscreener_price)
-        if not data:
-            data = self._fetch_coingecko_price(mint)
-        if not data or data.get("price", 0) <= 0:
-            raise ValueError(f"No price data found for mint {mint}")
-        return data
 
     def fetch_prices(self, mints: list[str]) -> dict[str, dict[str, Any]]:
         """Fetch prices for multiple mints (best effort).

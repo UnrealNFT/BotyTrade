@@ -47,7 +47,7 @@ class TradingEngine:
             discovery_enabled=True,
             discovery_max_age_hours=48.0,
             discovery_min_score=10.0,
-            max_workers=8,
+            max_workers=2,
         )
         self.feed = PriceFeed()
         self.watchlist_store = WatchlistStore()

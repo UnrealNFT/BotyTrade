@@ -71,7 +71,7 @@ class SolanaScanner:
         discovery_enabled: bool = True,
         discovery_max_age_hours: float = 48.0,
         discovery_min_score: float = 0.0,
-        max_workers: int = 8,
+        max_workers: int = 2,
     ) -> None:
         self.min_liquidity_usd = min_liquidity_usd
         self.min_volume_24h = min_volume_24h

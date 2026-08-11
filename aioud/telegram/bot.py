@@ -387,7 +387,11 @@ class TelegramBot:
             return
         await self.application.initialize()
         await self.application.start()
-        await self.application.updater.start_polling(drop_pending_updates=True)
+        await self.application.updater.start_polling(
+            drop_pending_updates=True,
+            poll_interval=2.0,
+            timeout=20,
+        )
         logger.info("Telegram bot started (authorized: @%s)", self.config.telegram_authorized_username or "anyone")
 
     async def stop(self) -> None:
