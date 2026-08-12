@@ -53,25 +53,19 @@ def is_fresh_pumpfun_token(
     if getattr(pair, "liquidity_usd", 0.0) < min_liquidity_usd:
         return False
 
-    # 1) Best signal: profile/discovery timestamp is very recent.
+    # ONLY snipe tokens with a verified recent creation/profile timestamp.
+    # The old price_change_24h>=100 fallback caused false positives: it sniped
+    # OLD watchlist tokens that were merely pumping today (HAIRINU, HONOR...).
     updated = getattr(pair, "profile_updated_at", None)
-    if updated is not None:
-        try:
-            if updated.tzinfo is None:
-                updated = updated.replace(tzinfo=timezone.utc)
-            age_min = (datetime.now(timezone.utc) - updated).total_seconds() / 60
-            if age_min <= max_age_minutes:
-                return True
-        except Exception:
-            pass
-
-    # 2) Fallback: huge 24h price change on a token we just discovered often
-    # means it launched very recently and is in its initial pump.
-    pc = getattr(pair, "price_change_24h", None)
-    if pc is not None and pc >= 100.0:  # +100% in 24h on a fresh find
-        return True
-
-    return False
+    if updated is None:
+        return False  # no reliable creation time -> not a fresh launch
+    try:
+        if updated.tzinfo is None:
+            updated = updated.replace(tzinfo=timezone.utc)
+        age_min = (datetime.now(timezone.utc) - updated).total_seconds() / 60
+        return age_min <= max_age_minutes
+    except Exception:
+        return False
 
 
 def sniper_exit_levels(entry_price: float, cfg: SniperConfig) -> dict[str, float]:

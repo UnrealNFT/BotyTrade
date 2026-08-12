@@ -673,6 +673,18 @@ class TradingEngine:
             reason=reason,
             score=score,
         )
+        # Sniper positions use a single +20%/-10% exit, not the scalper ladder —
+        # send a clear strategy message so the TP/SL shown match reality.
+        if is_sniper:
+            await self.telegram.send_alert(
+                f"🎯 *Stratégie Sniper — {pair.symbol}*\n"
+                f"Entrée: `{price:.8f}`\n"
+                f"🎯 Take-profit: *+{self.sniper_config.take_profit_pct*100:.0f}%* "
+                f"(`{price * (1 + self.sniper_config.take_profit_pct):.8f}`)\n"
+                f"🛡️ Stop-loss: *-{self.sniper_config.stop_loss_pct*100:.0f}%* "
+                f"(`{price * (1 - self.sniper_config.stop_loss_pct):.8f}`)\n"
+                f"💵 Montant: `${amount_usd:.2f}`"
+            )
         msg = (
             f"Opened {pair.symbol} @ {price:.6f} | score={score} | "
             f"paper={self.config.paper_trading}"
