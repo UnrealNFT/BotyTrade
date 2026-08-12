@@ -50,6 +50,41 @@ def _cursor(commit: bool = False) -> Generator[Any, None, None]:
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Instance lock: ensure only ONE running instance polls Telegram at a time.
+# Render keeps the old instance alive for a few seconds during deploys; both
+# polling getUpdates with the same token triggers a permanent Conflict crash.
+# We use a Postgres advisory lock (visible to ALL instances sharing the DB).
+# ---------------------------------------------------------------------------
+
+_INSTANCE_LOCK_KEY = 727272  # arbitrary int64 key for the advisory lock
+
+
+def acquire_instance_lock() -> Any:
+    """Try to acquire the global instance lock.
+
+    Returns an open psycopg2 connection holding a session-level advisory lock
+    if this instance is the leader, or None if another instance holds it.
+    The lock is released automatically when the connection closes / process dies.
+    """
+    if not _is_postgres_available():
+        return None
+    try:
+        conn = _get_db()
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (_INSTANCE_LOCK_KEY,))
+        acquired = bool(cur.fetchone()[0])
+        cur.close()
+        if acquired:
+            return conn  # keep the connection open; it holds the lock
+        conn.close()
+        return None
+    except Exception as exc:
+        logger.warning("Instance lock failed: %s", exc)
+        return None
+
+
 def init_schema() -> None:
     """Create tables needed by the bot."""
     if not _is_postgres_available():

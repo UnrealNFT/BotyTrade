@@ -12,6 +12,7 @@ from telegram.ext import (
 )
 
 from aioud.utils.config import Config
+from aioud.utils import postgres_store
 from aioud.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -24,6 +25,9 @@ class TelegramBot:
         self.config = config
         self.enabled = bool(config.telegram_bot_token)
         self.application: Application | None = None
+        self._lock_conn: Any = None          # Postgres advisory lock connection
+        self._polling_active: bool = False
+        self._leadership_task: asyncio.Task | None = None
         if self.enabled:
             # Safety check: never post AIOud alerts into the Piranewz channel.
             piranewz_channel = (config.piranewz_channel or "").lstrip("@").lower()
@@ -391,7 +395,13 @@ class TelegramBot:
             logger.warning("Failed to send Telegram message: %s", exc)
 
     async def start(self) -> None:
-        """Start the bot in the background."""
+        """Start the bot in the background.
+
+        Leadership: only ONE instance across all Render deploys may poll
+        Telegram (one getUpdates poller per token). We take a Postgres
+        advisory lock; if another instance holds it, this one becomes a
+        standby (no polling, no crash) and retries leadership every 30s.
+        """
         if not self.enabled or not self.application:
             logger.info("Telegram bot is disabled, skipping start.")
             return
@@ -399,41 +409,86 @@ class TelegramBot:
         await self.application.start()
         if not self.application.updater:
             return
-        # Kill any leftover webhook from a previous run so polling can start.
         try:
             await self.application.bot.delete_webhook(drop_pending_updates=True)
         except Exception as exc:
             logger.warning("delete_webhook failed: %s", exc)
-        # Retry polling a few times: during a Render deploy the OLD instance may
-        # still be polling for a few seconds, causing a getUpdates Conflict.
-        for attempt in range(1, 6):
-            try:
-                await self.application.updater.start_polling(
-                    drop_pending_updates=True,
-                    poll_interval=3.0,
-                    timeout=30,
-                )
-                logger.info("Telegram bot started (authorized: @%s)", self.config.telegram_authorized_username or "anyone")
-                return
-            except Exception as exc:
-                if "Conflict" in type(exc).__name__ or "Conflict" in str(exc):
-                    logger.warning(
-                        "Telegram polling conflict (old instance still running?), retry %s/5 in 5s",
-                        attempt,
-                    )
-                    await asyncio.sleep(5)
-                else:
-                    logger.error("Failed to start Telegram polling: %s", exc)
-                    break
-        logger.error("Telegram polling disabled after repeated conflicts.")
-        self.enabled = False
+        # Start with or without the lock; a background task keeps retrying.
+        self._lock_conn = postgres_store.acquire_instance_lock()
+        if self._lock_conn is not None:
+            await self._start_polling_locked()
+        else:
+            logger.warning(
+                "Another instance holds the Telegram lock; standby mode "
+                "(no polling). Will retry leadership every 30s."
+            )
+        self._leadership_task = asyncio.create_task(self._leadership_loop())
+
+    async def _start_polling_locked(self) -> None:
+        """Start getUpdates polling (called only when we hold the lock)."""
+        if self._polling_active or not self.application or not self.application.updater:
+            return
+        try:
+            await self.application.updater.start_polling(
+                drop_pending_updates=True,
+                poll_interval=3.0,
+                timeout=30,
+            )
+            self._polling_active = True
+            logger.info(
+                "Telegram bot started (authorized: @%s)",
+                self.config.telegram_authorized_username or "anyone",
+            )
+        except Exception as exc:
+            logger.error("Failed to start Telegram polling: %s", exc)
+
+    async def _leadership_loop(self) -> None:
+        """Keep/retake the instance lock and start/stop polling accordingly."""
+        import psycopg2  # local import, optional dep
+        while self.enabled and self.application:
+            await asyncio.sleep(30)
+            if self._lock_conn is not None:
+                # Verify the lock connection is still alive; reconnect if lost.
+                try:
+                    cur = self._lock_conn.cursor()
+                    cur.execute("SELECT 1")
+                    cur.close()
+                    if not self._polling_active:
+                        await self._start_polling_locked()
+                    continue
+                except Exception:
+                    logger.warning("Instance lock lost; re-acquiring.")
+                    try:
+                        self._lock_conn.close()
+                    except Exception:
+                        pass
+                    self._lock_conn = None
+                    self._polling_active = False
+            # Try to (re)acquire leadership.
+            self._lock_conn = postgres_store.acquire_instance_lock()
+            if self._lock_conn is not None and not self._polling_active:
+                logger.info("Acquired Telegram leadership; starting polling.")
+                await self._start_polling_locked()
 
     async def stop(self) -> None:
         """Stop the bot."""
         if not self.enabled or not self.application:
             return
-        if self.application.updater:
+        self.enabled = False
+        if self._leadership_task:
+            self._leadership_task.cancel()
+            try:
+                await self._leadership_task
+            except asyncio.CancelledError:
+                pass
+        if self.application.updater and self._polling_active:
             await self.application.updater.stop()
         await self.application.stop()
         await self.application.shutdown()
+        if self._lock_conn is not None:
+            try:
+                self._lock_conn.close()  # releases the advisory lock
+            except Exception:
+                pass
+            self._lock_conn = None
         logger.info("Telegram bot stopped")
