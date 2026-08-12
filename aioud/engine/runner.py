@@ -97,7 +97,7 @@ class TradingEngine:
         self.groq_reports: list[dict[str, Any]] = []
         self.manual_signals: list[dict[str, Any]] = []
         self._sampler_task: asyncio.Task | None = None
-        self._next_cycle_at: float = 0.0  # monotonic ts of next trading cycle
+        self._next_cycle_at: float = 0.0  # unix ts (time.time) of next trading cycle
 
     async def start(self) -> None:
         """Start Telegram bot and initialize watchlist in the background."""
@@ -811,7 +811,10 @@ class TradingEngine:
             "open_positions": len(self.risk.positions),
             "daily_pnl": -self.risk.daily_loss_usd,
             "unrealized_pnl": 0.0,
-            "next_scan_seconds": max(0, int(self._next_cycle_at - time.monotonic())),
+            # Absolute unix timestamp so the dashboard can compute the real
+            # remaining time at every poll (no drifting local countdown).
+            "next_scan_ts": int(self._next_cycle_at),
+            "next_scan_seconds": max(0, int(self._next_cycle_at - time.time())),
             "new_tokens": getattr(self.scanner, "new_tokens", [])[-10:],
             "scanner": {
                 "discovery_enabled": self.scanner.discovery_enabled,
@@ -888,7 +891,7 @@ class TradingEngine:
 
             # Sleep in small chunks so stop_event remains responsive and we log liveness.
             total_sleep = scan_interval_minutes * 60
-            self._next_cycle_at = time.monotonic() + total_sleep
+            self._next_cycle_at = time.time() + total_sleep
             chunk = 10
             for _ in range(total_sleep // chunk):
                 if not self.running:

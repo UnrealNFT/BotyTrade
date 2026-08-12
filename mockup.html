@@ -571,7 +571,10 @@
     }
 
     let state = {};
-    let nextScanSeconds = 120;
+    // Absolute unix timestamp (seconds) of the next trading cycle, sent by the
+    // server. We compute the remaining time at each poll instead of running a
+    // local countdown that drifts and loops back to 2min.
+    let nextScanTs = 0;
     // Configuration côté client : laisser vide pour appels relatifs (même domaine),
     // ou injecter l'URL Render via window.API_BASE avant ce script.
     const API_BASE = (typeof window !== 'undefined' && window.API_BASE) || '';
@@ -612,7 +615,12 @@
       unrealEl.textContent = (unrealized >= 0 ? '+' : '') + '$' + unrealized.toFixed(2);
       unrealEl.className = 'qstat-value ' + (unrealized >= 0 ? 'positive' : 'negative');
 
-      nextScanSeconds = state.next_scan_seconds || 120;
+      // Sync from server: prefer absolute timestamp, fall back to relative seconds.
+      if (state.next_scan_ts) {
+        nextScanTs = state.next_scan_ts;
+      } else if (typeof state.next_scan_seconds === 'number') {
+        nextScanTs = Math.floor(Date.now() / 1000) + state.next_scan_seconds;
+      }
 
       // Scanner panel
       const scanner = state.scanner || {};
@@ -775,9 +783,10 @@
     function updateCountdown() {
       const el = document.getElementById('next-scan');
       if (!el) return;
-      nextScanSeconds = Math.max(0, nextScanSeconds - 1);
-      const m = Math.floor(nextScanSeconds / 60);
-      const s = nextScanSeconds % 60;
+      if (!nextScanTs) { el.textContent = '—'; return; }
+      const remaining = Math.max(0, nextScanTs - Math.floor(Date.now() / 1000));
+      const m = Math.floor(remaining / 60);
+      const s = remaining % 60;
       el.textContent = m > 0 ? `${m}m ${s}s` : `${s}s`;
     }
 
