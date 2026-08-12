@@ -73,7 +73,13 @@ class SolanaConnector(_MintConstants):
                 logger.error("Invalid SOLANA_PRIVATE_KEY: %s", exc)
         else:
             logger.warning("SOLANA_PRIVATE_KEY not set; real swaps disabled.")
-        self.jupiter_url = config.jupiter_api_url.rstrip("/")
+        # Jupiter a migre son API: l'ancien quote-api.jup.ag/v6 est mort (DNS).
+        # Si l'ancienne URL est encore configuree (env override), on redirige.
+        url = config.jupiter_api_url.rstrip("/")
+        if "quote-api.jup.ag" in url:
+            url = "https://lite-api.jup.ag/swap/v1"
+            logger.warning("JUPITER_API_URL pointe vers l'ancien endpoint mort; redirection vers %s", url)
+        self.jupiter_url = url
         logger.info(
             "SolanaConnector initialized | paper=%s | pubkey=%s | rpc=%s",
             self.paper,

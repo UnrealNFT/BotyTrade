@@ -132,7 +132,9 @@ class Config:
                 os.environ.get("BALANCE_ALERT_COOLDOWN_MINUTES", "30")
             ),
             jupiter_api_url=os.environ.get(
-                "JUPITER_API_URL", "https://quote-api.jup.ag/v6"
+                # Jupiter migre: l'ancien quote-api.jup.ag/v6 est mort (DNS).
+                # Nouvel endpoint public: lite-api.jup.ag/swap/v1
+                "JUPITER_API_URL", "https://lite-api.jup.ag/swap/v1"
             ),
             moralis_api_key=os.environ.get("MORALIS_API_KEY", ""),
             groq_api_key=os.environ.get("GROQ_API_KEY", ""),
