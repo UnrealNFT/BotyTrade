@@ -39,6 +39,9 @@ class Position:
     tp1_hit: bool = False
     tp2_hit: bool = False
     tp3_hit: bool = False
+    # Sniper positions use a single mechanical exit (+20%/-10%) instead of the
+    # TP1/2/3 ladder, because they trade pure launch momentum, not indicators.
+    is_sniper: bool = False
     opened_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def pnl_pct(self, current_price: float) -> float:
@@ -308,7 +311,8 @@ class RiskManager:
         }
 
     def add_position(
-        self, mint: str, symbol: str, entry_price: float, amount: float, atr: float = 0.0
+        self, mint: str, symbol: str, entry_price: float, amount: float, atr: float = 0.0,
+        is_sniper: bool = False,
     ) -> Position:
         """Register a new position with ATR-aware TP/SL levels."""
         levels = self.compute_exit_levels(entry_price, atr=atr)
@@ -323,6 +327,7 @@ class RiskManager:
             sl=levels["sl"],
             trailing_stop=levels["sl"],
             highest_price=entry_price,
+            is_sniper=is_sniper,
         )
         self.positions[mint] = pos
         self._save_state()
@@ -371,6 +376,21 @@ class RiskManager:
         pos = self.positions.get(mint)
         if not pos:
             return {"action": "none", "reason": "No position"}
+
+        # --- Sniper positions: single mechanical exit, no TP ladder. ---
+        if pos.is_sniper:
+            if current_price > pos.highest_price:
+                pos.highest_price = current_price
+            pnl_pct = pos.pnl_pct(current_price)
+            # +20% take-profit: the whole point of the snipe.
+            if pnl_pct >= 20.0:
+                trade = self._record_close(pos, current_price, f"Sniper TP +20% at {current_price:.6f}")
+                return {"action": "close", **trade}
+            # -10% protective stop: fast invalidation on a failed launch.
+            if pnl_pct <= -10.0:
+                trade = self._record_close(pos, current_price, f"Sniper SL -10% at {current_price:.6f}")
+                return {"action": "close", **trade}
+            return {"action": "hold", "reason": f"Sniper holding {pnl_pct:+.1f}%"}
 
         # Update highest price and trailing stop after TP1
         if current_price > pos.highest_price:

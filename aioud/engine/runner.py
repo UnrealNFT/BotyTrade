@@ -18,6 +18,7 @@ from aioud.llm.piranewz_client import PiranewzClient
 from aioud.llm.piranewz_scraper import PiranewzScraper
 from aioud.llm.piranewz_tg_reader import PiranewzTelegramReader
 from aioud.risk.manager import RiskManager
+from aioud.strategies.pumpfun_sniper import SniperConfig, is_fresh_pumpfun_token
 from aioud.strategies.scalper import SolanaScalper
 from aioud.telegram.bot import TelegramBot
 from aioud.utils.config import Config
@@ -54,6 +55,16 @@ class TradingEngine:
             discovery_min_score=20.0,
             max_workers=2,
         )
+        # Pump.fun sniper: buy brand-new launches, exit mechanically at +20%/-10%.
+        # Enabled via SNIPER_ENABLED; tunables via env. Position sizing reuses the
+        # engine's percentage-of-capital sizing (risk.compute_position_size_usd).
+        self.sniper_config = SniperConfig(
+            take_profit_pct=config.sniper_take_profit_pct,
+            stop_loss_pct=config.sniper_stop_loss_pct,
+            max_token_age_minutes=config.sniper_max_age_minutes,
+            min_liquidity_usd=config.sniper_min_liquidity_usd,
+        )
+        self.sniper_enabled = config.sniper_enabled
         self.feed = PriceFeed(
             trappist_api_url=config.trappist_api_url,
             trappist_api_key=config.trappist_api_key,
@@ -539,7 +550,54 @@ class TradingEngine:
             logger.warning(msg)
             return None
 
-    async def _open_position(self, pair: TokenPair, price: float, score: int, reason: str, atr: float = 0.0) -> None:
+    async def _snipe_new_tokens(self) -> None:
+        """Detect freshly-launched tokens in the watchlist and snipe them.
+
+        Unlike the indicator-based scalper, the sniper does NOT wait for RSI/MACD
+        confirmation — on a fresh pump.fun launch there are no candles yet, and
+        speed matters more than confirmation. We buy immediately and exit at a
+        fixed +20% (protective -10% stop), handled by the risk manager's sniper
+        branch.
+        """
+        if not self.sniper_enabled:
+            return
+        for pair in self.watchlist:
+            if pair.mint in self.risk.positions:
+                continue  # already holding
+            if pair.mint in self.risk.cooldown_until:
+                continue  # recently closed, let it cool
+            try:
+                fresh = is_fresh_pumpfun_token(
+                    pair,
+                    max_age_minutes=self.sniper_config.max_token_age_minutes,
+                    min_liquidity_usd=self.sniper_config.min_liquidity_usd,
+                )
+            except Exception:
+                fresh = False
+            if not fresh:
+                continue
+            try:
+                data = await asyncio.to_thread(self.feed.fetch_price, pair.mint)
+                price = data["price"]
+            except Exception:
+                price = pair.price_usd or 0.0
+            if price <= 0:
+                continue
+            reason = (
+                f"🎯 Snipe pump.fun — lancement récent "
+                f"(liq ${pair.liquidity_usd:,.0f})"
+            )
+            await self._open_position(
+                pair, price, score=100, reason=reason, atr=0.0, is_sniper=True
+            )
+            logger.info("Sniper entered %s @ %.8f", pair.symbol, price)
+            await self.telegram.send_alert(
+                f"🎯 *SNIPE — {pair.symbol}*\n"
+                f"Nouveau lancement détecté, entrée immédiate.\n"
+                f"Objectif: *+20%* | Stop: *-10%*"
+            )
+
+    async def _open_position(self, pair: TokenPair, price: float, score: int, reason: str, atr: float = 0.0, is_sniper: bool = False) -> None:
         """Open a new position after risk checks.
 
         ATR (Average True Range) is passed through so stops/targets adapt to the
@@ -586,6 +644,7 @@ class TradingEngine:
             entry_price=price,
             amount=position_amount,
             atr=atr,
+            is_sniper=is_sniper,
         )
 
         await self.telegram.send_trade_open(
@@ -780,6 +839,12 @@ class TradingEngine:
             self._log("info", "Cycle de trading démarré")
             await self._check_balances()
             await self._manage_open_positions()
+            # Snipe any freshly-launched pump.fun tokens before the slower
+            # indicator-based evaluation — launch momentum is time-sensitive.
+            try:
+                await self._snipe_new_tokens()
+            except Exception as exc:
+                logger.warning("Sniper pass failed: %s", exc)
 
             # Optional paper test: force one fake trade on the very first cycle
             # to validate the full pipeline (signal -> execution -> Telegram -> dashboard).

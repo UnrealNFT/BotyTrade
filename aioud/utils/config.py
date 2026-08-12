@@ -73,6 +73,13 @@ class Config:
     # Telegram on every trading cycle (~5 min). Enable for live monitoring.
     status_report_every_cycle: bool
 
+    # Pump.fun sniper: buy brand-new launches, exit at a fixed +20% target.
+    sniper_enabled: bool
+    sniper_take_profit_pct: float
+    sniper_stop_loss_pct: float
+    sniper_max_age_minutes: float
+    sniper_min_liquidity_usd: float
+
     # Logging
     log_level: str
 
@@ -147,6 +154,12 @@ class Config:
             status_report_every_cycle=os.environ.get(
                 "STATUS_REPORT_EVERY_CYCLE", "false"
             ).lower() in ("1", "true", "yes"),
+            sniper_enabled=os.environ.get("SNIPER_ENABLED", "true").lower()
+            in ("1", "true", "yes"),
+            sniper_take_profit_pct=float(os.environ.get("SNIPER_TAKE_PROFIT_PCT", "0.20")),
+            sniper_stop_loss_pct=float(os.environ.get("SNIPER_STOP_LOSS_PCT", "0.10")),
+            sniper_max_age_minutes=float(os.environ.get("SNIPER_MAX_AGE_MINUTES", "15")),
+            sniper_min_liquidity_usd=float(os.environ.get("SNIPER_MIN_LIQUIDITY_USD", "3000")),
             trappist_api_url=os.environ.get("TRAPPIST_API_URL", ""),
             trappist_api_key=os.environ.get("TRAPPIST_API_KEY", ""),
             database_url=os.environ.get("DATABASE_URL", ""),
