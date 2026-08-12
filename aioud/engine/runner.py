@@ -663,21 +663,24 @@ class TradingEngine:
     async def _check_balances(self) -> None:
         """Alert on low balances and stop trading if critical.
 
+        The two RPC calls (SOL + USDC) run in parallel to halve latency.
         Also updates cached balance/PnL values for the dashboard.
         """
-        now = datetime.now(timezone.utc)
-        try:
-            sol_balance = await asyncio.to_thread(self.solana.get_balance)
-            self._last_sol_balance = sol_balance
-        except Exception as exc:
-            logger.warning("Balance check SOL failed: %s", exc)
+        sol_balance, usdc_balance = await asyncio.gather(
+            asyncio.to_thread(self.solana.get_balance),
+            asyncio.to_thread(self.solana.get_token_balance, self.solana.USDC_MINT),
+            return_exceptions=True,
+        )
+        if isinstance(sol_balance, Exception):
+            logger.warning("Balance check SOL failed: %s", sol_balance)
             sol_balance = self._last_sol_balance
-        try:
-            usdc_balance = await asyncio.to_thread(self.solana.get_token_balance, self.solana.USDC_MINT)
-            self._last_usdc_balance = usdc_balance
-        except Exception as exc:
-            logger.warning("Balance check USDC failed: %s", exc)
+        else:
+            self._last_sol_balance = sol_balance
+        if isinstance(usdc_balance, Exception):
+            logger.warning("Balance check USDC failed: %s", usdc_balance)
             usdc_balance = self._last_usdc_balance
+        else:
+            self._last_usdc_balance = usdc_balance
         await asyncio.to_thread(self._update_cached_sol_price)
 
         if sol_balance < self.config.min_sol_balance_for_fees:
@@ -739,17 +742,19 @@ class TradingEngine:
                     self._log("buy", f"TEST PAPER: opened {first.symbol} @ {price}")
                     logger.info("Force paper test trade executed for %s", first.symbol)
 
-            # Snapshot all watchlist prices in one batch before evaluating signals.
-            mints_to_evaluate = [p.mint for p in self.watchlist if p.mint not in self.risk.positions]
-            if mints_to_evaluate:
-                await asyncio.to_thread(self.feed.snapshot_batch, mints_to_evaluate)
-
             # Evaluate at most N pairs per cycle (round-robin) so a slow price
             # fetch on one token cannot stall the whole cycle / dashboard.
             max_per_cycle = max(1, self.config.max_pairs_per_cycle)
             start_idx = self._cycle_count % max(1, len(self.watchlist))
             ordered = self.watchlist[start_idx:] + self.watchlist[:start_idx]
             to_eval = [p for p in ordered if p.mint not in self.risk.positions][:max_per_cycle]
+
+            # Snapshot ONLY the pairs we're about to evaluate. The background
+            # 60s sampler already keeps all watchlist candles fresh, so there's
+            # no need to fetch every mint here — that's what made cycles take 250s.
+            eval_mints = [p.mint for p in to_eval]
+            if eval_mints:
+                await asyncio.to_thread(self.feed.snapshot_batch, eval_mints)
 
             for pair in to_eval:
                 if pair.mint in self.risk.positions:
