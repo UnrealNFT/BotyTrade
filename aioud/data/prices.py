@@ -44,7 +44,7 @@ class PriceFeed:
         self.db_path = db_path or Path("data/prices.db")
         self.interval_seconds = interval_seconds
         self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
-        self._cache_ttl = 15.0
+        self._cache_ttl = 60.0
         self.use_postgres = postgres_store._is_postgres_available()
         if self.use_postgres:
             postgres_store.init_schema()

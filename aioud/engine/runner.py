@@ -29,7 +29,7 @@ logger = get_logger(__name__)
 class TradingEngine:
     """Autonomous trading engine for Solana tokens."""
 
-    MAX_WATCHLIST_SIZE = 100
+    MAX_WATCHLIST_SIZE = 10
 
     def __init__(self, config: Config) -> None:
         self.config = config
