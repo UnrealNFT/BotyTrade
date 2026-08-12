@@ -69,6 +69,9 @@ class Config:
 
     # Testing
     force_paper_test_trade: bool
+    # Debug: send a full status report (balances/positions/PnL/watchlist) to
+    # Telegram on every trading cycle (~5 min). Enable for live monitoring.
+    status_report_every_cycle: bool
 
     # Logging
     log_level: str
@@ -141,6 +144,9 @@ class Config:
             in ("1", "true", "yes"),
             force_paper_test_trade=os.environ.get("FORCE_PAPER_TEST_TRADE", "false").lower()
             in ("1", "true", "yes"),
+            status_report_every_cycle=os.environ.get(
+                "STATUS_REPORT_EVERY_CYCLE", "false"
+            ).lower() in ("1", "true", "yes"),
             trappist_api_url=os.environ.get("TRAPPIST_API_URL", ""),
             trappist_api_key=os.environ.get("TRAPPIST_API_KEY", ""),
             database_url=os.environ.get("DATABASE_URL", ""),

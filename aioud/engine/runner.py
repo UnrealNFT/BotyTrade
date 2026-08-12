@@ -706,6 +706,53 @@ class TradingEngine:
                     f"Le bot ne peut plus ouvrir de positions."
                 )
 
+    async def _send_status_report(self) -> None:
+        """Send a full status snapshot to Telegram: balances, positions, PnL, watchlist.
+
+        Used as a debug/monitoring aid: gives a complete picture of the bot state
+        on every cycle so you can watch it live without opening the dashboard.
+        """
+        perf = self.risk.performance_stats()
+        day_pnl = -self.risk.daily_loss_usd
+
+        # Open positions with live unrealized PnL.
+        pos_lines: list[str] = []
+        for pos in self.risk.positions.values():
+            try:
+                data = await asyncio.to_thread(self.feed.fetch_price, pos.mint)
+                cur = data["price"]
+            except Exception:
+                cur = pos.entry_price
+            pnl = pos.pnl_pct(cur)
+            pos_lines.append(
+                f"• *{pos.symbol}* entry `{pos.entry_price:.6f}` now `{cur:.6f}` "
+                f"({pnl:+.1f}%)"
+            )
+        positions_txt = "\n".join(pos_lines) if pos_lines else "_Aucune position ouverte_"
+
+        # Watchlist with latest signals.
+        wl_lines: list[str] = []
+        for p in self.watchlist[:10]:
+            ev = self.recent_evaluations.get(p.mint, {})
+            sig = ev.get("signal", "hold").upper()
+            score = ev.get("score", 0)
+            wl_lines.append(f"• {p.symbol}: {sig} ({score:+d})")
+        watchlist_txt = "\n".join(wl_lines) if wl_lines else "_Watchlist vide_"
+
+        msg = (
+            f"📟 *Rapport d'état — cycle #{self._cycle_count}*\n\n"
+            f"💰 *Soldes*\n"
+            f"SOL: `{self._last_sol_balance:.4f}` | USDC: `{self._last_usdc_balance:.2f}$`\n"
+            f"SOL/USD: `{self._cached_sol_price_usd:.2f}$`\n\n"
+            f"📊 *PnL*\n"
+            f"Jour: `{day_pnl:+.2f}$` | Total: `{perf['total_pnl_usd']:+.2f}$`\n"
+            f"Trades: `{perf['trades']}` | Win rate: `{perf['win_rate']:.0f}%` | "
+            f"PF: `{perf['profit_factor']}`\n\n"
+            f"📂 *Positions ({len(self.risk.positions)}/5)*\n{positions_txt}\n\n"
+            f"🔭 *Watchlist ({len(self.watchlist)})*\n{watchlist_txt}"
+        )
+        await self.telegram.send_alert(msg)
+
     def _can_alert(self, alert_type: str) -> bool:
         """Throttle repeated Telegram alerts."""
         now = datetime.now(timezone.utc)
@@ -913,6 +960,10 @@ class TradingEngine:
                     f"Trades: {perf['trades']} | Win rate: {perf['win_rate']:.0f}%\n"
                     f"PnL jour: {'+' if -self.risk.daily_loss_usd >= 0 else ''}{-self.risk.daily_loss_usd:.2f}$"
                 )
+
+            # Full status report every cycle when debug monitoring is enabled.
+            if self.config.status_report_every_cycle:
+                await self._send_status_report()
 
             # Sleep in small chunks so stop_event remains responsive and we log liveness.
             total_sleep = scan_interval_minutes * 60
