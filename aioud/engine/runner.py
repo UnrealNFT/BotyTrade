@@ -364,24 +364,38 @@ class TradingEngine:
             await self.telegram.send_alert(message)
             logger.info("Groq report sent: %s", report.summary)
 
-            # Act on high-confidence buy suggestions already in watchlist and Solana-compatible.
+            # Act on Groq buy suggestions already in the watchlist and Solana-compatible.
+            # We no longer require a double technical confirmation (buy signal AND
+            # score>=40): the AI's fundamental/sentiment read is itself the edge.
+            # We only SKIP when the technicals scream SELL (strong downtrend).
             watchlist_symbols = {p.symbol.upper(): p for p in self.watchlist}
             for suggestion in report.buy_suggestions:
                 symbol = suggestion.get("symbol", "").upper()
                 confidence = suggestion.get("confidence", 0)
-                if confidence < 70:
+                if confidence < self.config.groq_auto_buy_min_confidence:
                     continue
                 pair = watchlist_symbols.get(symbol)
                 if not pair or pair.mint in self.risk.positions:
                     continue
                 evaluation = await self._evaluate_pair(pair)
-                if evaluation and evaluation["signal"] == "buy" and evaluation["score"] >= 40:
-                    reason = f"IA+tech: {suggestion.get('reason', 'signal IA')}"
-                    await self._open_position(
-                        pair, evaluation["price"], evaluation["score"], reason,
-                        atr=evaluation["details"].get("atr", 0.0),
-                    )
-                    logger.info("Groq-triggered buy for %s", pair.symbol)
+                if not evaluation:
+                    continue
+                # Skip only on a clearly bearish technical read; otherwise trust the AI.
+                if evaluation["signal"] == "sell" or evaluation["score"] <= -40:
+                    logger.info("Groq buy %s skipped: technicals bearish (score %s)", symbol, evaluation["score"])
+                    continue
+                reason = f"🤖 IA ({confidence}%): {suggestion.get('reason', 'signal IA')}"
+                await self._open_position(
+                    pair, evaluation["price"], max(evaluation["score"], confidence), reason,
+                    atr=evaluation["details"].get("atr", 0.0),
+                )
+                await self.telegram.send_alert(
+                    f"🤖 *Achat IA auto — {pair.symbol}*\n"
+                    f"Confiance: `{confidence}%`\n"
+                    f"_{suggestion.get('reason', '')}_\n"
+                    f"Stratégie TP/SL envoyée ci-dessus ⬆️"
+                )
+                logger.info("Groq-triggered buy for %s (conf %s)", pair.symbol, confidence)
         except Exception as exc:
             logger.warning("Groq report cycle failed: %s", exc)
             await self.telegram.send_alert(f"⚠️ Rapport IA indisponible: {exc}")

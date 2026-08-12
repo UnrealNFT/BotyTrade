@@ -80,6 +80,9 @@ class Config:
     sniper_max_age_minutes: float
     sniper_min_liquidity_usd: float
 
+    # Groq auto-buy: minimum AI confidence to auto-execute a buy suggestion.
+    groq_auto_buy_min_confidence: int
+
     # Logging
     log_level: str
 
@@ -160,6 +163,9 @@ class Config:
             sniper_stop_loss_pct=float(os.environ.get("SNIPER_STOP_LOSS_PCT", "0.10")),
             sniper_max_age_minutes=float(os.environ.get("SNIPER_MAX_AGE_MINUTES", "15")),
             sniper_min_liquidity_usd=float(os.environ.get("SNIPER_MIN_LIQUIDITY_USD", "3000")),
+            groq_auto_buy_min_confidence=int(
+                os.environ.get("GROQ_AUTO_BUY_MIN_CONFIDENCE", "40")
+            ),
             trappist_api_url=os.environ.get("TRAPPIST_API_URL", ""),
             trappist_api_key=os.environ.get("TRAPPIST_API_KEY", ""),
             database_url=os.environ.get("DATABASE_URL", ""),
