@@ -277,8 +277,29 @@ class RiskManager:
         self.last_reject_reason = ""
         return True
 
-    def compute_exit_levels(self, entry_price: float) -> dict[str, float]:
-        """Compute TP1/TP2/TP3 and SL levels from entry price."""
+    def compute_exit_levels(self, entry_price: float, atr: float = 0.0) -> dict[str, float]:
+        """Compute TP/SL levels from entry price.
+
+        Professional approach (Turtle Traders / Van Tharp): use ATR-based levels
+        so stops adapt to each token's volatility instead of fixed percentages.
+        - A volatile memecoin gets wide stops (avoids wicked-out losses).
+        - A stable token gets tight stops (locks in profits faster).
+        Falls back to the configured fixed percentages when ATR is unknown.
+        """
+        if atr > 0 and entry_price > 0:
+            atr_pct = atr / entry_price
+            sl_dist = atr * 2.0           # 2x ATR stop (Turtle standard)
+            tp1_dist = atr * 1.5          # R:R >= 1.5 on first target
+            tp2_dist = atr * 3.0
+            tp3_dist = atr * 5.0
+            # Clamp to sane bounds so a crazy ATR can't produce absurd levels.
+            sl_pct = min(max(sl_dist / entry_price, 0.02), 0.15)
+            return {
+                "tp1": entry_price + min(tp1_dist, entry_price * 0.10),
+                "tp2": entry_price + min(tp2_dist, entry_price * 0.20),
+                "tp3": entry_price + min(tp3_dist, entry_price * 0.40),
+                "sl": entry_price * (1 - sl_pct),
+            }
         return {
             "tp1": entry_price * (1 + self.config.default_tp1_pct),
             "tp2": entry_price * (1 + self.config.default_tp2_pct),
@@ -287,10 +308,10 @@ class RiskManager:
         }
 
     def add_position(
-        self, mint: str, symbol: str, entry_price: float, amount: float
+        self, mint: str, symbol: str, entry_price: float, amount: float, atr: float = 0.0
     ) -> Position:
-        """Register a new position with TP/SL levels."""
-        levels = self.compute_exit_levels(entry_price)
+        """Register a new position with ATR-aware TP/SL levels."""
+        levels = self.compute_exit_levels(entry_price, atr=atr)
         pos = Position(
             mint=mint,
             symbol=symbol,
@@ -341,7 +362,12 @@ class RiskManager:
         return trade
 
     def check_exit(self, mint: str, current_price: float) -> dict[str, Any]:
-        """Check if a position should be closed or partially taken profit."""
+        """Check if a position should be closed or partially taken profit.
+
+        Adds two professional rules on top of TP/SL:
+        - Break-even: after TP1 is hit, the stop moves to entry (can't lose).
+        - Time-stop: a position stagnant for too long is closed (frees capital).
+        """
         pos = self.positions.get(mint)
         if not pos:
             return {"action": "none", "reason": "No position"}
@@ -354,6 +380,18 @@ class RiskManager:
                 trail_distance = (pos.highest_price - pos.entry_price) * 0.4
                 new_stop = max(pos.trailing_stop, pos.highest_price - trail_distance)
                 pos.trailing_stop = max(new_stop, pos.sl)
+
+        # Break-even rule: once TP1 is hit, never let the trade turn into a loss.
+        if pos.tp1_hit:
+            pos.sl = max(pos.sl, pos.entry_price)
+            pos.trailing_stop = max(pos.trailing_stop, pos.entry_price)
+
+        # Time-stop rule: close a position that has gone nowhere for 6 hours.
+        # Scalping capital should not be tied up in a dead trade.
+        age_min = (datetime.now(timezone.utc) - pos.opened_at).total_seconds() / 60
+        if age_min > 360 and abs(pos.pnl_pct(current_price)) < 1.5:
+            trade = self._record_close(pos, current_price, f"Time-stop after {int(age_min)}min (stagnant)")
+            return {"action": "close", **trade}
 
         # Stop loss or trailing stop
         effective_sl = max(pos.sl, pos.trailing_stop)
@@ -385,15 +423,51 @@ class RiskManager:
             }
         if current_price >= pos.tp1 and not pos.tp1_hit:
             pos.tp1_hit = True
+            # Break-even immediately: the moment TP1 is hit, the stop moves to
+            # entry so the rest of the position can never become a loss.
+            pos.sl = max(pos.sl, pos.entry_price)
+            pos.trailing_stop = max(pos.trailing_stop, pos.entry_price)
+            self._save_state()
             return {
                 "action": "partial",
                 "level": "tp1",
-                "reason": f"TP1 reached at {current_price:.6f}",
+                "reason": f"TP1 reached at {current_price:.6f} (stop moved to break-even)",
                 "exit_price": current_price,
                 "portion": 0.3,
             }
 
         return {"action": "hold", "reason": "No exit condition met"}
+
+    def performance_stats(self) -> dict[str, Any]:
+        """Compute trading performance metrics from closed trade history.
+
+        These are the numbers professional traders live by:
+        - win_rate: % of trades that closed in profit
+        - profit_factor: gross wins / gross losses (>1.0 = profitable)
+        - expectancy: average $ won/lost per trade (edge per trade)
+        """
+        closed = [t for t in self.trade_history if "pnl_usd" in t]
+        if not closed:
+            return {
+                "trades": 0, "win_rate": 0.0, "profit_factor": 0.0,
+                "expectancy_usd": 0.0, "total_pnl_usd": 0.0,
+                "avg_win_usd": 0.0, "avg_loss_usd": 0.0,
+            }
+        wins = [t["pnl_usd"] for t in closed if t["pnl_usd"] > 0]
+        losses = [t["pnl_usd"] for t in closed if t["pnl_usd"] < 0]
+        gross_win = sum(wins)
+        gross_loss = abs(sum(losses))
+        total = gross_win - gross_loss
+        n = len(closed)
+        return {
+            "trades": n,
+            "win_rate": round(len(wins) / n * 100, 1) if n else 0.0,
+            "profit_factor": round(gross_win / gross_loss, 2) if gross_loss > 0 else (float("inf") if gross_win > 0 else 0.0),
+            "expectancy_usd": round(total / n, 2) if n else 0.0,
+            "total_pnl_usd": round(total, 2),
+            "avg_win_usd": round(gross_win / len(wins), 2) if wins else 0.0,
+            "avg_loss_usd": round(gross_loss / len(losses), 2) if losses else 0.0,
+        }
 
     def get_status(self) -> dict[str, Any]:
         """Return current risk status."""
@@ -402,6 +476,7 @@ class RiskManager:
             "daily_loss_usd": round(self.daily_loss_usd, 2),
             "daily_loss_limit_usd": self.config.max_daily_loss_usd,
             "open_positions": len(self.positions),
+            "performance": self.performance_stats(),
             "positions": [
                 {
                     "mint": p.mint,

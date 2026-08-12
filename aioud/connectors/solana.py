@@ -145,11 +145,13 @@ class SolanaConnector(_MintConstants):
                 input_mint,
                 output_mint,
             )
+            # amount_out=0 signals the caller to compute token amount as
+            # amount_usd / price (the real number of tokens acquired).
             return SwapResult(
                 success=True,
                 signature="paper",
                 amount_in=amount_usd,
-                amount_out=amount_usd * 0.98,
+                amount_out=0.0,
                 price=1.0,
             )
 

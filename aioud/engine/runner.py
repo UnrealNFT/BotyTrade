@@ -358,7 +358,10 @@ class TradingEngine:
                 evaluation = await self._evaluate_pair(pair)
                 if evaluation and evaluation["signal"] == "buy" and evaluation["score"] >= 40:
                     reason = f"IA+tech: {suggestion.get('reason', 'signal IA')}"
-                    await self._open_position(pair, evaluation["price"], evaluation["score"], reason)
+                    await self._open_position(
+                        pair, evaluation["price"], evaluation["score"], reason,
+                        atr=evaluation["details"].get("atr", 0.0),
+                    )
                     logger.info("Groq-triggered buy for %s", pair.symbol)
         except Exception as exc:
             logger.warning("Groq report cycle failed: %s", exc)
@@ -528,8 +531,12 @@ class TradingEngine:
             logger.warning(msg)
             return None
 
-    async def _open_position(self, pair: TokenPair, price: float, score: int, reason: str) -> None:
-        """Open a new position after risk checks."""
+    async def _open_position(self, pair: TokenPair, price: float, score: int, reason: str, atr: float = 0.0) -> None:
+        """Open a new position after risk checks.
+
+        ATR (Average True Range) is passed through so stops/targets adapt to the
+        token's actual volatility instead of using one-size-fits-all percentages.
+        """
         sol_balance = self._last_sol_balance
         usdc_balance = self._last_usdc_balance
         if not self.risk.can_open_position(
@@ -547,7 +554,7 @@ class TradingEngine:
             self._log("warn", f"Signal rejeté {pair.symbol}: {reason}")
             return
 
-        levels = self.risk.compute_exit_levels(price)
+        levels = self.risk.compute_exit_levels(price, atr=atr)
         # Percentage-based sizing: position = max_position_pct of total capital,
         # capped by TRADING_AMOUNT_USD (now a max-per-trade ceiling).
         amount_usd = self.risk.compute_position_size_usd(
@@ -570,6 +577,7 @@ class TradingEngine:
             symbol=pair.symbol,
             entry_price=price,
             amount=position_amount,
+            atr=atr,
         )
 
         await self.telegram.send_trade_open(
@@ -601,14 +609,9 @@ class TradingEngine:
 
     def _update_cached_sol_price(self) -> None:
         """Refresh cached SOL price from the feed (call only in cycles/threads)."""
-        sol_mint = "So11111111111111111111111111111111111111112"
-        try:
-            data = self.feed.fetch_price(sol_mint)
-            price = data.get("price")
-            if price:
-                self._cached_sol_price_usd = float(price)
-        except Exception:
-            pass
+        price = self.feed.fetch_sol_price()
+        if price:
+            self._cached_sol_price_usd = float(price)
 
     async def _manage_open_positions(self) -> None:
         """Check TP/SL for existing positions."""
@@ -765,7 +768,7 @@ class TradingEngine:
 
                 if signal == "buy" and score >= 50:
                     reason = details.get("reason", "signal technique")
-                    await self._open_position(pair, price, score, reason)
+                    await self._open_position(pair, price, score, reason, atr=details.get("atr", 0.0))
 
             logger.info("--- Trading cycle complete (%s pairs evaluated) ---", evaluated)
             self._log("info", f"Cycle terminé ({evaluated} paires évaluées)")
@@ -857,6 +860,7 @@ class TradingEngine:
             ],
             "evaluations": self.recent_evaluations,
             "trade_history": self.risk.trade_history[-20:],
+            "performance": self.risk.performance_stats(),
             "logs": self.logs[-50:],
             "telegram": self.telegram_messages[-20:],
             "groq_reports": self.groq_reports[-5:],

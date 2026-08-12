@@ -129,6 +129,23 @@ def compute_ema_trend(closes: pd.Series, fast: int = 9, slow: int = 21) -> dict:
     }
 
 
+def compute_atr(df: pd.DataFrame, period: int = 14) -> float:
+    """Return the latest Average True Range — the basis for volatility-aware stops.
+
+    Used by the risk manager to size stops/targets to each token's actual
+    volatility (Turtle Traders approach) instead of fixed percentages.
+    """
+    high = df["high"]
+    low = df["low"]
+    close = df["close"]
+    tr1 = high - low
+    tr2 = abs(high - close.shift(1))
+    tr3 = abs(low - close.shift(1))
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1 / period, min_periods=period).mean()
+    return _safe_float(atr.iloc[-1])
+
+
 def generate_signal(
     closes: pd.Series,
     ohlc: pd.DataFrame,
@@ -148,6 +165,7 @@ def generate_signal(
     adx_data = compute_adx(ohlc)
     volume_spike = compute_volume_spike(ohlc["volume"])
     ema = compute_ema_trend(closes)
+    atr = compute_atr(ohlc)
 
     score = 0
     reasons = []
@@ -225,5 +243,6 @@ def generate_signal(
         "adx": adx_data,
         "volume_spike": round(volume_spike, 2),
         "ema": ema,
+        "atr": atr,
         "reason": "; ".join(reasons),
     }

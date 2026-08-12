@@ -2,6 +2,7 @@
 
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -166,11 +167,11 @@ class PriceFeed:
             batch = mints[i : i + 10]
             try:
                 url = f"{DEXSCREENER_BASE}/tokens/v1/solana/{','.join(batch)}"
-                response = requests.get(url, timeout=(5, 15))
+                response = requests.get(url, timeout=(3, 8))
                 if response.status_code == 429:
                     logger.warning("DexScreener rate limit hit, backing off")
-                    time.sleep(5.0)
-                    response = requests.get(url, timeout=(5, 15))
+                    time.sleep(3.0)
+                    response = requests.get(url, timeout=(3, 8))
                 response.raise_for_status()
                 data = response.json()
                 items = data if isinstance(data, list) else (data.get("pairs", []) or [])
@@ -197,8 +198,8 @@ class PriceFeed:
                             "liquidity_usd": float(float(best.get("liquidity", {}).get("usd") or 0)),
                             "source": "dexscreener",
                         }
-                # DexScreener free tier: larger delay between batches to avoid 429.
-                time.sleep(2.0)
+                # DexScreener free tier: small delay between batches to avoid 429.
+                time.sleep(0.8)
             except Exception as exc:
                 logger.warning("DexScreener batch price fetch failed for batch %s: %s", batch, exc)
         return results
@@ -234,11 +235,16 @@ class PriceFeed:
                     results[mint] = data
                     remaining.remove(mint)
 
-        for mint in remaining:
-            try:
-                results[mint] = self.fetch_price(mint)
-            except Exception as exc:
-                logger.warning("Price fetch failed for %s: %s", mint, exc)
+        # Fetch any remaining tokens in parallel instead of one-by-one.
+        if remaining:
+            with ThreadPoolExecutor(max_workers=min(6, len(remaining))) as pool:
+                futures = {pool.submit(self.fetch_price, m): m for m in remaining}
+                for fut in as_completed(futures, timeout=30):
+                    mint = futures[fut]
+                    try:
+                        results[mint] = fut.result()
+                    except Exception as exc:
+                        logger.warning("Price fetch failed for %s: %s", mint, exc)
         return results
 
     def fetch_price(self, mint: str) -> dict[str, Any]:
@@ -250,6 +256,23 @@ class PriceFeed:
         if not data:
             raise ValueError(f"No price data available for {mint}")
         return data
+
+    def fetch_sol_price(self) -> float | None:
+        """Fetch SOL/USD price with a long cache to avoid an RPC hit each cycle."""
+        sol_mint = "So11111111111111111111111111111111111111112"
+        now = time.time()
+        entry = self._cache.get(sol_mint)
+        if entry and now - entry[0] < 300:  # 5-minute cache for SOL price
+            return entry[1].get("price")
+        try:
+            data = self.fetch_price(sol_mint)
+            price = data.get("price")
+            if price:
+                self._cache[sol_mint] = (now, data)
+                return float(price)
+        except Exception:
+            pass
+        return None
 
     def record_snapshot(self, mint: str, price: float, volume_24h: float) -> None:
         """Store a raw price snapshot."""

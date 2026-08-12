@@ -392,6 +392,17 @@
         <div class="metric"><span class="metric-label">Prochain scan</span><span class="value" id="next-scan">—</span></div>
       </div>
 
+      <!-- Performance (pro trading metrics) -->
+      <div class="card">
+        <h2><span class="icon">📈</span> Performance</h2>
+        <div class="metric"><span class="metric-label">Trades</span><span class="value" id="perf-trades">0</span></div>
+        <div class="metric"><span class="metric-label">Win rate</span><span class="value" id="perf-winrate">—</span></div>
+        <div class="metric"><span class="metric-label">Profit factor</span><span class="value" id="perf-pf">—</span></div>
+        <div class="metric"><span class="metric-label">Expectancy / trade</span><span class="value" id="perf-expectancy">—</span></div>
+        <div class="metric"><span class="metric-label">PnL total</span><span class="value" id="perf-total">$0.00</span></div>
+        <div class="metric"><span class="metric-label">Gain moy. / Perte moy.</span><span class="value" id="perf-avg">—</span></div>
+      </div>
+
       <!-- Positions -->
       <div class="card">
         <h2><span class="icon">🎯</span> Positions ouvertes</h2>
@@ -628,6 +639,29 @@
       document.getElementById('scanner-microcap').textContent = scanner.microcap_enabled ? 'ON' : 'OFF';
       document.getElementById('scanner-age').textContent = (scanner.discovery_max_age_hours || 48) + 'h';
       document.getElementById('scanner-min-score').textContent = (scanner.discovery_min_score || 0).toFixed(1);
+
+      // Performance panel (pro trading metrics)
+      const perf = state.performance || {};
+      document.getElementById('perf-trades').textContent = perf.trades || 0;
+      const wr = perf.win_rate || 0;
+      const wrEl = document.getElementById('perf-winrate');
+      wrEl.textContent = perf.trades ? wr.toFixed(1) + '%' : '—';
+      wrEl.className = 'value ' + (wr >= 50 ? 'positive' : (perf.trades ? 'negative' : ''));
+      const pf = perf.profit_factor || 0;
+      const pfEl = document.getElementById('perf-pf');
+      pfEl.textContent = perf.trades ? (pf === null || pf > 999 ? '∞' : pf.toFixed(2)) : '—';
+      pfEl.className = 'value ' + (pf >= 1 ? 'positive' : (perf.trades ? 'negative' : ''));
+      const exp = perf.expectancy_usd || 0;
+      const expEl = document.getElementById('perf-expectancy');
+      expEl.textContent = perf.trades ? (exp >= 0 ? '+' : '') + '$' + exp.toFixed(2) : '—';
+      expEl.className = 'value ' + (exp >= 0 ? 'positive' : 'negative');
+      const tot = perf.total_pnl_usd || 0;
+      const totEl = document.getElementById('perf-total');
+      totEl.textContent = (tot >= 0 ? '+' : '') + '$' + tot.toFixed(2);
+      totEl.className = 'value ' + (tot >= 0 ? 'positive' : 'negative');
+      document.getElementById('perf-avg').textContent = perf.trades
+        ? `+$${(perf.avg_win_usd || 0).toFixed(2)} / -$${(perf.avg_loss_usd || 0).toFixed(2)}`
+        : '—';
 
       // Watchlist
       const watchlist = state.watchlist || [];
