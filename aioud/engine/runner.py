@@ -132,7 +132,12 @@ class TradingEngine:
                 pass
         if self.piranewz_reader.enabled:
             await self.piranewz_reader.stop()
-        await self.telegram.send_alert("🛑 *AIOud Trader* arrêté.")
+        # Message rassurant: en pratique un 'stop' sur Render = redeploiement,
+        # la nouvelle instance reprend immediatement le relais.
+        await self.telegram.send_alert(
+            "🔄 *AIOud Trader* redémarre (déploiement).\n"
+            "La nouvelle instance prend le relais dans quelques secondes."
+        )
         await self.telegram.stop()
 
     async def _refresh_watchlist(self) -> None:
@@ -897,6 +902,17 @@ class TradingEngine:
             if self._cycle_count % 10 == 0 and self._cycle_count != self._last_groq_report_cycle:
                 self._last_groq_report_cycle = self._cycle_count
                 await self._run_groq_report()
+
+            # Heartbeat every 6 cycles (~30 min): confirm the bot is alive even
+            # when no trade/report fires, so Telegram never looks 'dead'.
+            if self._cycle_count % 6 == 0 and self._can_alert("heartbeat"):
+                perf = self.risk.performance_stats()
+                await self.telegram.send_alert(
+                    f"💓 *Bot actif* — cycle #{self._cycle_count}\n"
+                    f"Positions: {len(self.risk.positions)}/5 | "
+                    f"Trades: {perf['trades']} | Win rate: {perf['win_rate']:.0f}%\n"
+                    f"PnL jour: {'+' if -self.risk.daily_loss_usd >= 0 else ''}{-self.risk.daily_loss_usd:.2f}$"
+                )
 
             # Sleep in small chunks so stop_event remains responsive and we log liveness.
             total_sleep = scan_interval_minutes * 60
