@@ -47,7 +47,7 @@ class SolanaScalper:
     def should_enter(self, ohlcv: list[dict[str, Any]]) -> bool:
         """Convenience method to check if we should buy."""
         result = self.analyze(ohlcv)
-        return result.signal == "buy" and result.score >= 50
+        return result.signal == "buy" and result.score >= 40
 
     def should_exit(self, ohlcv: list[dict[str, Any]]) -> bool:
         """Convenience method to check if we should sell."""

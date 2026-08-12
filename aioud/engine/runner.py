@@ -30,7 +30,10 @@ logger = get_logger(__name__)
 class TradingEngine:
     """Autonomous trading engine for Solana tokens."""
 
-    MAX_WATCHLIST_SIZE = 10
+    # Watchlist size: 20 gives more opportunities. The background 60s sampler
+    # keeps all candles fresh, and we evaluate a rotating subset each cycle so
+    # a bigger watchlist doesn't slow the loop.
+    MAX_WATCHLIST_SIZE = 20
 
     def __init__(self, config: Config) -> None:
         self.config = config
@@ -823,7 +826,10 @@ class TradingEngine:
                 details = evaluation["details"]
                 price = evaluation["price"]
 
-                if signal == "buy" and score >= 50:
+                # Buy threshold lowered to 40: in a bearish/neutral market a 50+
+                # score is rare, so the bot almost never traded. 40 still requires
+                # multiple confirming indicators but catches real opportunities.
+                if signal == "buy" and score >= 40:
                     reason = details.get("reason", "signal technique")
                     await self._open_position(pair, price, score, reason, atr=details.get("atr", 0.0))
 
