@@ -330,7 +330,7 @@ class TelegramBot:
 
     async def send_alert(self, message: str) -> None:
         """Send a generic alert, logging failures instead of crashing."""
-        if not self.enabled or not self.application:
+        if not self.enabled or not self.application or not self.application.bot:
             logger.info("Telegram alert (bot disabled): %s", message)
             return
         text = message + f"\n🖥️ [Dashboard]({self._dashboard_url()})"
@@ -397,12 +397,16 @@ class TelegramBot:
         await self.application.start()
         if not self.application.updater:
             return
-        await self.application.updater.start_polling(
-            drop_pending_updates=True,
-            poll_interval=2.0,
-            timeout=20,
-        )
-        logger.info("Telegram bot started (authorized: @%s)", self.config.telegram_authorized_username or "anyone")
+        try:
+            await self.application.updater.start_polling(
+                drop_pending_updates=True,
+                poll_interval=3.0,
+                timeout=30,
+            )
+            logger.info("Telegram bot started (authorized: @%s)", self.config.telegram_authorized_username or "anyone")
+        except Exception as exc:
+            logger.error("Failed to start Telegram polling: %s", exc)
+            self.enabled = False
 
     async def stop(self) -> None:
         """Stop the bot."""

@@ -162,20 +162,24 @@ class PriceFeed:
         if not mints:
             return {}
         results: dict[str, dict[str, Any]] = {}
-        for i in range(0, len(mints), 20):
-            batch = mints[i : i + 20]
+        for i in range(0, len(mints), 10):
+            batch = mints[i : i + 10]
             try:
                 url = f"{DEXSCREENER_BASE}/tokens/v1/solana/{','.join(batch)}"
                 response = requests.get(url, timeout=(5, 15))
                 if response.status_code == 429:
                     logger.warning("DexScreener rate limit hit, backing off")
-                    time.sleep(2.5)
+                    time.sleep(5.0)
                     response = requests.get(url, timeout=(5, 15))
                 response.raise_for_status()
                 data = response.json()
-                items = data if isinstance(data, list) else data.get("pairs", [])
+                items = data if isinstance(data, list) else (data.get("pairs", []) or [])
+                if not isinstance(items, list):
+                    continue
                 pairs_by_mint: dict[str, list[dict[str, Any]]] = {}
                 for raw in items:
+                    if not isinstance(raw, dict):
+                        continue
                     if raw.get("chainId") != "solana":
                         continue
                     mint = raw.get("baseToken", {}).get("address", "")
@@ -194,7 +198,7 @@ class PriceFeed:
                             "source": "dexscreener",
                         }
                 # DexScreener free tier: larger delay between batches to avoid 429.
-                time.sleep(1.0)
+                time.sleep(2.0)
             except Exception as exc:
                 logger.warning("DexScreener batch price fetch failed for batch %s: %s", batch, exc)
         return results

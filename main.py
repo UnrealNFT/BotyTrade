@@ -93,7 +93,7 @@ async def main() -> int:
 
     await engine.start()
 
-    loop_task = asyncio.create_task(engine.loop(scan_interval_minutes=1))
+    loop_task = asyncio.create_task(engine.loop(scan_interval_minutes=2))
 
     # Catch unhandled exceptions in the trading loop so the process doesn't die silently.
     async def _watch_loop_task() -> None:

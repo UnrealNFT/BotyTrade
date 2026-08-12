@@ -30,13 +30,14 @@ class TrappistPriceFeed:
         self.api_url = (api_url or "").rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        self._disabled = False
         self._session = requests.Session()
         if self.api_key:
             self._session.headers["Authorization"] = f"Bearer {self.api_key}"
         self._session.headers["Content-Type"] = "application/json"
 
     def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any] | None:
-        if not self.api_url:
+        if not self.api_url or self._disabled:
             return None
         try:
             response = self._session.post(
@@ -44,6 +45,10 @@ class TrappistPriceFeed:
                 json=payload,
                 timeout=(5, self.timeout),
             )
+            if response.status_code == 404:
+                logger.warning("TrappistAI endpoint %s not found; disabling TrappistAI", path)
+                self._disabled = True
+                return None
             response.raise_for_status()
             return response.json()
         except Exception as exc:
