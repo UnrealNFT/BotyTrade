@@ -39,10 +39,14 @@ class TelegramBot:
                 self.application = Application.builder().token(config.telegram_bot_token).build()
                 self._register_handlers()
                 logger.info(
-                    "Telegram bot configured to post to chat_id=%s (Piranewz channel=%s)",
+                    "Telegram bot configured to post to chat_id=%s",
                     config.telegram_chat_id,
-                    config.piranewz_channel,
                 )
+                if config.piranewz_channel:
+                    logger.info(
+                        "Piranewz reader channel=%s (must differ from TELEGRAM_CHAT_ID)",
+                        config.piranewz_channel,
+                    )
         else:
             logger.warning("TELEGRAM_BOT_TOKEN not set; Telegram bot is disabled.")
 

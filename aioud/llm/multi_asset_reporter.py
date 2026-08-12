@@ -45,7 +45,7 @@ class MultiAssetReporter:
     DEFAULT_SL_PCT = 0.05
     DEFAULT_BUY_LIMIT_DISCOUNT_PCT = 0.005  # buy limit 0.5% below current price
 
-    def __init__(self, api_key: str, price_feed: MultiAssetPriceFeed | None = None, model: str = "llama-3.1-70b-versatile") -> None:
+    def __init__(self, api_key: str, price_feed: MultiAssetPriceFeed | None = None, model: str = "llama-3.3-70b-versatile") -> None:
         self.api_key = api_key
         self.model = model
         self.price_feed = price_feed or MultiAssetPriceFeed()
