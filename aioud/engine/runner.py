@@ -105,6 +105,7 @@ class TradingEngine:
         if self.watchlist:
             logger.info("Loaded %s persisted watchlist pairs", len(self.watchlist))
         asyncio.create_task(self._refresh_watchlist())
+        asyncio.create_task(self._price_sampler_loop())
         await self.telegram.send_alert(
             f"⚡ *AIOud Trader* démarré.\nMode: *{'PAPER' if self.config.paper_trading else 'REAL'}*\n"
             "Scan multi-actifs Solana actif."
@@ -177,6 +178,23 @@ class TradingEngine:
         except Exception as exc:
             logger.error("Watchlist refresh failed: %s", exc)
             await self.telegram.send_alert(f"⚠️ Erreur refresh watchlist: {exc}")
+
+    async def _price_sampler_loop(self) -> None:
+        """Snapshot watchlist prices every minute so candles build in real time.
+
+        Without this, a new token needs ~2h (23 cycles x 5 min) before the
+        strategy has enough 1-minute candles to evaluate it. With this sampler
+        it needs ~25 minutes, and indicators use true 1m spacing.
+        """
+        interval = max(15.0, self.config.price_sampler_interval_seconds)
+        while self.running:
+            try:
+                mints = [p.mint for p in self.watchlist]
+                if mints:
+                    await asyncio.to_thread(self.feed.snapshot_batch, mints)
+            except Exception as exc:
+                logger.warning("Price sampler failed: %s", exc)
+            await asyncio.sleep(interval)
 
     def _sort_and_cap_watchlist(self, pairs) -> list[TokenPair]:
         """Sort watchlist by score/volume and enforce the max size."""
@@ -429,6 +447,26 @@ class TradingEngine:
             if candles is None:
                 candles = await asyncio.to_thread(self.feed.snapshot_and_build, pair.mint)
             min_candles = SolanaScalper.MIN_CANDLES
+            if len(candles) < min_candles and self.config.candle_warmup_enabled:
+                # Seed missing history with synthetic flat candles at current price
+                # so a fresh token becomes evaluable immediately instead of after
+                # ~2h of sampling. Synthetic volume is 0, so volume-based signals
+                # stay neutral until real volume accumulates.
+                missing = min_candles - len(candles)
+                last_price = candles[-1]["close"] if candles else (pair.price_usd or 0.0)
+                last_ts = int(candles[-1]["timestamp"]) if candles else int(time.time())
+                warmup = [
+                    {
+                        "timestamp": last_ts - (missing - i) * 60,
+                        "open": last_price,
+                        "high": last_price,
+                        "low": last_price,
+                        "close": last_price,
+                        "volume": 0.0,
+                    }
+                    for i in range(missing)
+                ]
+                candles = warmup + candles
             if len(candles) < min_candles:
                 msg = f"Evaluation {pair.symbol}: pas assez de bougies ({len(candles)}/{min_candles})"
                 self._log("info", msg)
@@ -483,13 +521,21 @@ class TradingEngine:
             open_positions=len(self.risk.positions),
             usdc_balance=usdc_balance,
         ):
+            reason = self.risk.last_reject_reason or "risk check failed"
             await self.telegram.send_alert(
-                f"⛔ *Signal rejeté — {pair.symbol}*\nRisk check failed (voir logs)."
+                f"⛔ *Signal rejeté — {pair.symbol}*\n{reason}"
             )
+            self._log("warn", f"Signal rejeté {pair.symbol}: {reason}")
             return
 
         levels = self.risk.compute_exit_levels(price)
-        amount_usd = self.config.trading_amount_usd
+        # Percentage-based sizing: position = max_position_pct of total capital,
+        # capped by TRADING_AMOUNT_USD (now a max-per-trade ceiling).
+        amount_usd = self.risk.compute_position_size_usd(
+            capital_sol=sol_balance,
+            sol_price=price if pair.symbol == "SOL" else self._sol_price_usd,
+            usdc_balance=usdc_balance,
+        )
 
         result = await asyncio.to_thread(self.solana.buy_token, pair.mint, amount_usd)
         if not result.success:
@@ -676,7 +722,14 @@ class TradingEngine:
             if mints_to_evaluate:
                 await asyncio.to_thread(self.feed.snapshot_batch, mints_to_evaluate)
 
-            for pair in self.watchlist:
+            # Evaluate at most N pairs per cycle (round-robin) so a slow price
+            # fetch on one token cannot stall the whole cycle / dashboard.
+            max_per_cycle = max(1, self.config.max_pairs_per_cycle)
+            start_idx = self._cycle_count % max(1, len(self.watchlist))
+            ordered = self.watchlist[start_idx:] + self.watchlist[:start_idx]
+            to_eval = [p for p in ordered if p.mint not in self.risk.positions][:max_per_cycle]
+
+            for pair in to_eval:
                 if pair.mint in self.risk.positions:
                     continue  # Already in a position.
 

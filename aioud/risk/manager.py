@@ -62,6 +62,7 @@ class RiskManager:
         self.positions: dict[str, Position] = {}
         self.cooldown_until: dict[str, datetime] = {}
         self.trade_history: list[dict[str, Any]] = []
+        self.last_reject_reason: str = ""
         self._load_state()
 
     @staticmethod
@@ -183,6 +184,24 @@ class RiskManager:
                 hour=0, minute=0, second=0, microsecond=0
             ) + timedelta(days=1)
 
+    def compute_position_size_usd(
+        self,
+        capital_sol: float,
+        sol_price: float,
+        usdc_balance: float | None = None,
+    ) -> float:
+        """Position size as a percentage of total capital (SOL + USDC).
+
+        Scales automatically with the account balance: the position is always
+        `max_position_pct` of capital, capped by `trading_amount_usd` (which
+        acts as a max per trade) and never below the USDC dust threshold.
+        """
+        capital_usd = capital_sol * sol_price
+        if usdc_balance is not None:
+            capital_usd += usdc_balance
+        size = capital_usd * self.config.max_position_pct
+        return min(size, self.config.trading_amount_usd)
+
     def can_open_position(
         self,
         mint: str,
@@ -196,57 +215,66 @@ class RiskManager:
         self._reset_day_if_needed()
 
         if self.daily_loss_usd >= self.config.max_daily_loss_usd:
-            logger.warning(
-                "Daily loss limit reached: %.2f / %.2f USD",
-                self.daily_loss_usd,
-                self.config.max_daily_loss_usd,
+            self.last_reject_reason = (
+                f"Perte journalière max atteinte: {self.daily_loss_usd:.2f} / "
+                f"{self.config.max_daily_loss_usd:.2f} USD"
             )
+            logger.warning("Daily loss limit reached: %.2f / %.2f USD",
+                           self.daily_loss_usd, self.config.max_daily_loss_usd)
             return False
 
         if open_positions >= 5:
+            self.last_reject_reason = f"Max positions ouvertes atteint ({open_positions}/5)"
             logger.warning("Max open positions reached (%s)", open_positions)
             return False
 
         now = datetime.now(timezone.utc)
         cooldown = self.cooldown_until.get(mint)
         if cooldown and now < cooldown:
+            self.last_reject_reason = f"{symbol} en cooldown jusqu'à {cooldown:%H:%M} UTC"
             logger.debug("%s in cooldown until %s", symbol, cooldown)
             return False
 
         # SOL fee reserve check
-        capital_usd = capital_sol * sol_price
         if capital_sol < self.config.min_sol_balance_for_fees:
-            logger.warning(
-                "SOL balance too low for fees: %.4f SOL (need %.4f)",
-                capital_sol,
-                self.config.min_sol_balance_for_fees,
+            self.last_reject_reason = (
+                f"SOL trop faible pour les fees: {capital_sol:.4f} SOL "
+                f"(min {self.config.min_sol_balance_for_fees})"
             )
+            logger.warning("SOL balance too low for fees: %.4f SOL (need %.4f)",
+                           capital_sol, self.config.min_sol_balance_for_fees)
             return False
+
+        # Percentage-based sizing: position = max_position_pct of total capital.
+        position_value = self.compute_position_size_usd(
+            capital_sol, sol_price, usdc_balance
+        )
 
         # USDC balance check for real trading
         if not self.config.paper_trading and usdc_balance is not None:
-            required = max(
-                self.config.trading_amount_usd,
-                self.config.min_usdc_balance_to_trade,
-            )
+            required = max(position_value, self.config.min_usdc_balance_to_trade)
             if usdc_balance < required:
-                logger.warning(
-                    "USDC balance too low: %.2f (need %.2f to trade)",
-                    usdc_balance,
-                    required,
+                self.last_reject_reason = (
+                    f"USDC insuffisant: {usdc_balance:.2f}$ (besoin {required:.2f}$ "
+                    f"pour une position de {position_value:.2f}$)"
                 )
+                logger.warning("USDC balance too low: %.2f (need %.2f to trade)",
+                               usdc_balance, required)
                 return False
 
-        if not self.config.paper_trading:
-            position_value = self.config.trading_amount_usd
-            if position_value > capital_usd * self.config.max_position_pct:
-                logger.warning(
-                    "Position size %.2f exceeds %.1f%% of capital",
-                    position_value,
-                    self.config.max_position_pct * 100,
-                )
-                return False
+        if not self.config.paper_trading and position_value < self.config.min_usdc_balance_to_trade:
+            capital_usd = capital_sol * sol_price + (usdc_balance or 0.0)
+            self.last_reject_reason = (
+                f"Capital trop faible: {capital_usd:.2f}$ -> position "
+                f"{position_value:.2f}$ < min {self.config.min_usdc_balance_to_trade:.2f}$"
+            )
+            logger.warning(
+                "Capital too low: %.2f USD -> position %.2f below dust minimum",
+                capital_usd, position_value,
+            )
+            return False
 
+        self.last_reject_reason = ""
         return True
 
     def compute_exit_levels(self, entry_price: float) -> dict[str, float]:

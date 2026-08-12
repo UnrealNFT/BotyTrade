@@ -33,6 +33,9 @@ class Config:
     default_tp3_pct: float
     trading_amount_usd: float
     priority_fee_micro_lamports: int
+    price_sampler_interval_seconds: float
+    max_pairs_per_cycle: int
+    candle_warmup_enabled: bool
     min_sol_balance_for_fees: float
     min_usdc_balance_to_trade: float
     balance_alert_cooldown_minutes: float
@@ -95,6 +98,16 @@ class Config:
             priority_fee_micro_lamports=int(
                 os.environ.get("PRIORITY_FEE_MICRO_LAMPORTS", "0")
             ),
+            # Price sampler: how often (s) to snapshot watchlist prices to build
+            # real 1-minute candles, and how many pairs to evaluate per cycle.
+            price_sampler_interval_seconds=float(
+                os.environ.get("PRICE_SAMPLER_INTERVAL_SECONDS", "60")
+            ),
+            max_pairs_per_cycle=int(os.environ.get("MAX_PAIRS_PER_CYCLE", "3")),
+            # Candle warmup: seed a new token with synthetic candles when it has
+            # less history than the strategy needs, so it becomes tradable fast.
+            candle_warmup_enabled=os.environ.get("CANDLE_WARMUP_ENABLED", "true").lower()
+            in ("1", "true", "yes"),
             min_sol_balance_for_fees=float(
                 os.environ.get("MIN_SOL_BALANCE_FOR_FEES", "0.02")
             ),
