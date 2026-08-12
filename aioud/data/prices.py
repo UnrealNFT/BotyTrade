@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 import requests
 
+from aioud.utils import postgres_store
 from aioud.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -43,9 +44,13 @@ class PriceFeed:
         self.db_path = db_path or Path("data/prices.db")
         self.interval_seconds = interval_seconds
         self._cache: dict[str, tuple[float, dict[str, Any]]] = {}
-        self._cache_ttl = 5.0
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_db()
+        self._cache_ttl = 15.0
+        self.use_postgres = postgres_store._is_postgres_available()
+        if self.use_postgres:
+            postgres_store.init_schema()
+        else:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            self._init_db()
         self._trappist = None
         if trappist_api_url:
             from aioud.data.trappist_prices import TrappistPriceFeed
@@ -244,20 +249,27 @@ class PriceFeed:
 
     def record_snapshot(self, mint: str, price: float, volume_24h: float) -> None:
         """Store a raw price snapshot."""
+        ts = time.time()
+        if self.use_postgres:
+            postgres_store.record_snapshot(mint, ts, price, volume_24h)
+            return
         with sqlite3.connect(self.db_path) as conn:
             conn.execute(
                 "INSERT INTO snapshots (mint, ts, price, volume_24h) VALUES (?, ?, ?, ?)",
-                (mint, time.time(), price, volume_24h),
+                (mint, ts, price, volume_24h),
             )
 
     def build_candles(self, mint: str) -> list[Candle]:
         """Aggregate snapshots into 1m candles and persist them."""
         interval = self.interval_seconds
-        with sqlite3.connect(self.db_path) as conn:
-            rows = conn.execute(
-                "SELECT ts, price, volume_24h FROM snapshots WHERE mint = ? ORDER BY ts",
-                (mint,),
-            ).fetchall()
+        if self.use_postgres:
+            rows = postgres_store.get_snapshots(mint)
+        else:
+            with sqlite3.connect(self.db_path) as conn:
+                rows = conn.execute(
+                    "SELECT ts, price, volume_24h FROM snapshots WHERE mint = ? ORDER BY ts",
+                    (mint,),
+                ).fetchall()
 
         if len(rows) < 2:
             return []
@@ -283,21 +295,37 @@ class PriceFeed:
             for idx, row in grouped.iterrows()
         ]
 
-        with sqlite3.connect(self.db_path) as conn:
-            for c in candles:
-                conn.execute(
-                    """
-                    INSERT OR REPLACE INTO candles
-                    (mint, timestamp, open, high, low, close, volume)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (mint, c.timestamp, c.open, c.high, c.low, c.close, c.volume),
-                )
+        candle_dicts = [
+            {
+                "timestamp": c.timestamp,
+                "open": c.open,
+                "high": c.high,
+                "low": c.low,
+                "close": c.close,
+                "volume": c.volume,
+            }
+            for c in candles
+        ]
+        if self.use_postgres:
+            postgres_store.save_candles(mint, candle_dicts)
+        else:
+            with sqlite3.connect(self.db_path) as conn:
+                for c in candles:
+                    conn.execute(
+                        """
+                        INSERT OR REPLACE INTO candles
+                        (mint, timestamp, open, high, low, close, volume)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (mint, c.timestamp, c.open, c.high, c.low, c.close, c.volume),
+                    )
 
         return candles
 
     def get_candles(self, mint: str, limit: int = 100) -> list[dict[str, Any]]:
         """Return recent candles for a token as strategy input."""
+        if self.use_postgres:
+            return postgres_store.get_candles(mint, limit)
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
                 """

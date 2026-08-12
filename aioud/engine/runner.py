@@ -20,6 +20,7 @@ from aioud.risk.manager import RiskManager
 from aioud.strategies.scalper import SolanaScalper
 from aioud.telegram.bot import TelegramBot
 from aioud.utils.config import Config
+from aioud.utils import postgres_store
 from aioud.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -38,15 +39,15 @@ class TradingEngine:
         self.scanner = SolanaScanner(
             min_liquidity_usd=50_000.0,
             min_volume_24h=10_000.0,
-            max_pairs_per_scan=30,
+            max_pairs_per_scan=20,
             microcap_enabled=True,
             microcap_max_mcap=500_000.0,
             microcap_min_liquidity_usd=10_000.0,
             microcap_min_volume_24h=5_000.0,
-            microcap_max_pairs=20,
+            microcap_max_pairs=10,
             discovery_enabled=True,
             discovery_max_age_hours=48.0,
-            discovery_min_score=10.0,
+            discovery_min_score=20.0,
             max_workers=2,
         )
         self.feed = PriceFeed(
@@ -64,10 +65,11 @@ class TradingEngine:
         self.running = False
         self.recent_evaluations: dict[str, dict[str, Any]] = {}
         self.logs: list[dict[str, Any]] = []
+        self._cycle_count: int = 0
         self.telegram_messages: list[dict[str, str]] = []
         self._paper_test_done = False
         self._running_cycle = False
-        self._last_alert: dict[str, datetime] = {}
+        self._last_alert: dict[str, datetime] = postgres_store.load_alert_cooldowns()
         self._last_sol_balance: float = 0.0
         self._last_usdc_balance: float = 0.0
         self._cached_sol_price_usd: float = 77.0
@@ -356,6 +358,11 @@ class TradingEngine:
 
     def _load_removed_mints(self) -> set[str]:
         """Load the persisted set of manually removed mints."""
+        try:
+            if postgres_store._is_postgres_available():
+                return postgres_store.load_removed_mints()
+        except Exception as exc:
+            logger.warning("Failed to load removed mints from Postgres: %s", exc)
         if not self._removed_mints_path.exists():
             return set()
         try:
@@ -372,6 +379,7 @@ class TradingEngine:
             self._removed_mints_path.parent.mkdir(parents=True, exist_ok=True)
             with self._removed_mints_path.open("w", encoding="utf-8") as f:
                 json.dump(sorted(self._removed_mints), f, indent=2)
+            postgres_store.save_removed_mints(self._removed_mints)
         except Exception as exc:
             logger.warning("Failed to save removed mints: %s", exc)
 
@@ -629,6 +637,7 @@ class TradingEngine:
         cooldown = timedelta(minutes=self.config.balance_alert_cooldown_minutes)
         if last is None or now - last >= cooldown:
             self._last_alert[alert_type] = now
+            postgres_store.save_alert_cooldown(alert_type, now)
             return True
         return False
 
@@ -785,10 +794,9 @@ class TradingEngine:
 
     async def loop(self, scan_interval_minutes: int = 2) -> None:
         """Run trading cycles until stopped."""
-        cycle_count = 0
         while self.running:
-            cycle_count += 1
-            logger.info("Loop iteration #%s", cycle_count)
+            self._cycle_count += 1
+            logger.info("Loop iteration #%s", self._cycle_count)
             try:
                 await self.run_cycle()
             except Exception as exc:
@@ -798,8 +806,8 @@ class TradingEngine:
                 except Exception:
                     pass
             # Every 10 cycles (10 minutes at 1m interval), generate a Groq report.
-            if cycle_count % 10 == 0 and cycle_count != self._last_groq_report_cycle:
-                self._last_groq_report_cycle = cycle_count
+            if self._cycle_count % 10 == 0 and self._cycle_count != self._last_groq_report_cycle:
+                self._last_groq_report_cycle = self._cycle_count
                 await self._run_groq_report()
 
             # Sleep in small chunks so stop_event remains responsive and we log liveness.
@@ -810,6 +818,7 @@ class TradingEngine:
                     break
                 await asyncio.sleep(chunk)
 
-            # Refresh watchlist every 12 minutes to discover new tokens faster.
-            if cycle_count % 12 == 0:
+            # Refresh watchlist every 30 minutes to reduce DexScreener calls.
+            if self._cycle_count % 30 == 0:
                 await self._refresh_watchlist()
+                postgres_store.prune_snapshots(max_age_days=3)

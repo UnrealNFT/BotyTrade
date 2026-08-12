@@ -11,6 +11,7 @@ from aiohttp.web_middlewares import middleware
 
 from aioud.engine.runner import TradingEngine
 from aioud.utils.config import Config
+from aioud.utils import postgres_store
 from aioud.utils.logger import get_logger, setup_logger
 
 logger = get_logger(__name__)
@@ -22,6 +23,8 @@ async def main() -> int:
     setup_logger(config.log_level)
 
     logger.info("Starting AIOud Trader | paper=%s", config.paper_trading)
+
+    postgres_store.init_schema()
 
     engine = TradingEngine(config)
 

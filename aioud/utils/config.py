@@ -60,6 +60,9 @@ class Config:
     trappist_api_url: str
     trappist_api_key: str
 
+    # PostgreSQL persistence (Render free survives restarts with external DB)
+    database_url: str
+
     # Testing
     force_paper_test_trade: bool
 
@@ -120,5 +123,6 @@ class Config:
             in ("1", "true", "yes"),
             trappist_api_url=os.environ.get("TRAPPIST_API_URL", ""),
             trappist_api_key=os.environ.get("TRAPPIST_API_KEY", ""),
+            database_url=os.environ.get("DATABASE_URL", ""),
             log_level=os.environ.get("LOG_LEVEL", "INFO"),
         )

@@ -8,12 +8,17 @@ from typing import Any
 
 from aioud.utils.config import Config
 from aioud.utils.logger import get_logger
+from aioud.utils import postgres_store
 
 logger = get_logger(__name__)
 
 STATE_DIR = Path("data")
 POSITIONS_FILE = STATE_DIR / "positions.json"
 HISTORY_FILE = STATE_DIR / "trade_history.json"
+
+
+def _postgres_enabled() -> bool:
+    return postgres_store._is_postgres_available()
 
 
 @dataclass
@@ -65,7 +70,7 @@ class RiskManager:
         return STATE_DIR
 
     def _save_state(self) -> None:
-        """Persist open positions and recent trade history to disk."""
+        """Persist open positions and recent trade history to disk/DB."""
         try:
             self._state_dir()
             positions_data = [
@@ -92,13 +97,16 @@ class RiskManager:
                 json.dump(positions_data, f, indent=2)
             with open(HISTORY_FILE, "w", encoding="utf-8") as f:
                 json.dump(self.trade_history[-500:], f, indent=2)
+            postgres_store.save_positions(positions_data)
         except Exception as exc:
             logger.warning("Failed to save risk state: %s", exc)
 
     def _load_state(self) -> None:
-        """Restore open positions and trade history from disk."""
+        """Restore open positions and trade history from disk/DB."""
         try:
-            if POSITIONS_FILE.exists():
+            if _postgres_enabled():
+                self._load_from_postgres()
+            elif POSITIONS_FILE.exists():
                 with open(POSITIONS_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
@@ -133,6 +141,39 @@ class RiskManager:
                 logger.info("Loaded %s historical trades from disk", len(self.trade_history))
         except Exception as exc:
             logger.warning("Failed to load risk state: %s", exc)
+
+    def _load_from_postgres(self) -> None:
+        """Load state from PostgreSQL when available."""
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=48)
+            for item in postgres_store.load_positions():
+                opened_at = datetime.fromisoformat(item["opened_at"])
+                if opened_at < cutoff:
+                    logger.info("Ignoring stale Postgres position %s from %s", item["symbol"], opened_at)
+                    continue
+                pos = Position(
+                    mint=item["mint"],
+                    symbol=item["symbol"],
+                    entry_price=float(item["entry_price"]),
+                    amount=float(item["amount"]),
+                    side=item.get("side", "long"),
+                    tp1=float(item["tp1"]),
+                    tp2=float(item["tp2"]),
+                    tp3=float(item["tp3"]),
+                    sl=float(item["sl"]),
+                    trailing_stop=float(item.get("trailing_stop", item["sl"])),
+                    highest_price=float(item.get("highest_price", item["entry_price"])),
+                    tp1_hit=bool(item.get("tp1_hit", False)),
+                    tp2_hit=bool(item.get("tp2_hit", False)),
+                    tp3_hit=bool(item.get("tp3_hit", False)),
+                    opened_at=opened_at,
+                )
+                self.positions[pos.mint] = pos
+            logger.info("Loaded %s open positions from Postgres", len(self.positions))
+            self.trade_history = postgres_store.load_trade_history(limit=500)
+            logger.info("Loaded %s historical trades from Postgres", len(self.trade_history))
+        except Exception as exc:
+            logger.warning("Failed to load Postgres risk state: %s", exc)
 
     def _reset_day_if_needed(self) -> None:
         now = datetime.now(timezone.utc)
@@ -266,6 +307,7 @@ class RiskManager:
             self.daily_loss_usd += -pnl_usd
         del self.positions[pos.mint]
         self._save_state()
+        postgres_store.add_trade(trade)
         # 15-minute cooldown after close
         self.cooldown_until[pos.mint] = datetime.now(timezone.utc) + timedelta(minutes=15)
         return trade

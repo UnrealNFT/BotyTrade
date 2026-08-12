@@ -32,6 +32,7 @@ services:
       # MORALIS_API_KEY
       # GROQ_API_KEY
       # DASHBOARD_URL (URL Netlify finale, ex: https://botytrade.netlify.app/mockup.html)
+      # DATABASE_URL (URL interne de la PostgreSQL Render, ex: postgresql://user:pass@host:5432/db)
       - key: TRAPPIST_API_URL
         value: https://trappistai-backend.onrender.com
       # TRAPPIST_API_KEY (optionnel, si tu securises /api/prices/batch)

@@ -7,11 +7,16 @@ from pathlib import Path
 from typing import Any
 
 from aioud.data.scanner import TokenPair
+from aioud.utils import postgres_store
 from aioud.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 DEFAULT_WATCHLIST_PATH = Path("data/watchlist.json")
+
+
+def _postgres_enabled() -> bool:
+    return postgres_store._is_postgres_available()
 
 
 def _pair_to_dict(pair: TokenPair) -> dict[str, Any]:
@@ -58,6 +63,19 @@ class WatchlistStore:
 
     def load(self) -> list[TokenPair]:
         """Load persisted pairs. Returns empty list if missing or corrupt."""
+        if _postgres_enabled():
+            try:
+                items = postgres_store.load_watchlist()
+                pairs = []
+                for item in items:
+                    try:
+                        pairs.append(_pair_from_dict(item))
+                    except Exception as exc:
+                        logger.warning("Skipping corrupt watchlist entry: %s", exc)
+                return pairs
+            except Exception as exc:
+                logger.warning("Failed to load watchlist from Postgres: %s", exc)
+                return []
         if not self.path.exists():
             return []
         try:
@@ -75,15 +93,19 @@ class WatchlistStore:
             return []
 
     def save(self, pairs: list[TokenPair]) -> None:
-        """Persist pairs to disk."""
+        """Persist pairs to disk/DB."""
+        data = [_pair_to_dict(p) for p in pairs]
         try:
             with self.path.open("w", encoding="utf-8") as f:
-                json.dump([_pair_to_dict(p) for p in pairs], f, indent=2, ensure_ascii=False)
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            postgres_store.save_watchlist(data)
         except Exception as exc:
-            logger.warning("Failed to save watchlist to %s: %s", self.path, exc)
+            logger.warning("Failed to save watchlist: %s", exc)
 
     def remove(self, mint: str) -> bool:
         """Remove a pair by mint. Returns True if it existed."""
+        if _postgres_enabled():
+            return postgres_store.remove_from_watchlist(mint)
         pairs = self.load()
         new_pairs = [p for p in pairs if p.mint != mint]
         if len(new_pairs) == len(pairs):
