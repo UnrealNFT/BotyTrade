@@ -52,6 +52,7 @@ class Config:
     piranewz_api_key: str
     piranewz_channel: str
     piranewz_extra_tickers: str
+    piranewz_tg_reader_enabled: bool
 
     # Multi-asset / manual signals (CEX prices)
     coingecko_api_key: str
@@ -126,6 +127,12 @@ class Config:
             piranewz_api_key=os.environ.get("PIRANEWZ_API_KEY", ""),
             piranewz_channel=os.environ.get("PIRANEWZ_CHANNEL", "@PIRANEWZ"),
             piranewz_extra_tickers=os.environ.get("PIRANEWZ_EXTRA_TICKERS", ""),
+            # Off by default: the TG reader uses the same bot token as the main
+            # bot, which causes getUpdates conflicts. The web scraper is used
+            # instead unless this is explicitly enabled with a separate token.
+            piranewz_tg_reader_enabled=os.environ.get(
+                "PIRANEWZ_TG_READER", "false"
+            ).lower() in ("1", "true", "yes"),
             # Default: no HTTP Piranewz API configured, Telegram listener stays disabled.
             coingecko_api_key=os.environ.get("COINGECKO_API_KEY", ""),
             coinmarketcap_api_key=os.environ.get("COINMARKETCAP_API_KEY", ""),

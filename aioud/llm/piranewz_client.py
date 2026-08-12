@@ -110,3 +110,45 @@ class PiranewzClient:
             return response.status_code == 200
         except Exception:
             return False
+
+    def summarize_sentiment(self, articles: list[NewsArticle]) -> dict[str, Any]:
+        """Derive a sentiment summary from fetched news headlines.
+
+        Used as a fallback when the Telegram reader is disabled: the Groq
+        report and the dashboard still get Piranewz context from the HTTP API.
+        """
+        if not articles:
+            return {
+                "overall": "neutral",
+                "counts": {"bullish": 0, "bearish": 0, "neutral": 0},
+                "symbol_sentiment": {},
+                "signals": [],
+            }
+        counts = {"bullish": 0, "bearish": 0, "neutral": 0}
+        symbol_sentiment: dict[str, dict[str, int]] = {}
+        signals: list[dict[str, Any]] = []
+        for art in articles:
+            sentiment = art.sentiment if art.sentiment in counts else "neutral"
+            counts[sentiment] += 1
+            for sym in art.symbols or []:
+                symbol_sentiment.setdefault(sym, {"bullish": 0, "bearish": 0, "neutral": 0})
+                symbol_sentiment[sym][sentiment] += 1
+            signals.append({
+                "text": f"{art.title} — {art.summary}".strip(" —"),
+                "symbols": art.symbols or [],
+                "sentiment": sentiment,
+                "keywords": [],
+                "posted_at": art.published_at,
+            })
+        if counts["bullish"] > counts["bearish"] * 1.2:
+            overall = "bullish"
+        elif counts["bearish"] > counts["bullish"] * 1.2:
+            overall = "bearish"
+        else:
+            overall = "neutral"
+        return {
+            "overall": overall,
+            "counts": counts,
+            "symbol_sentiment": symbol_sentiment,
+            "signals": signals[-10:],
+        }

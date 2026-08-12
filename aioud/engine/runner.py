@@ -15,6 +15,7 @@ from aioud.data.watchlist_store import WatchlistStore
 from aioud.llm.groq_reporter import GroqReporter
 from aioud.llm.multi_asset_reporter import MultiAssetReporter
 from aioud.llm.piranewz_client import PiranewzClient
+from aioud.llm.piranewz_scraper import PiranewzScraper
 from aioud.llm.piranewz_tg_reader import PiranewzTelegramReader
 from aioud.risk.manager import RiskManager
 from aioud.strategies.scalper import SolanaScalper
@@ -75,11 +76,15 @@ class TradingEngine:
         self._cached_sol_price_usd: float = 77.0
         self.groq_reporter = GroqReporter(api_key=config.groq_api_key)
         self.piranewz = PiranewzClient(api_url=config.piranewz_api_url, api_key=config.piranewz_api_key)
-        # Piranewz Telegram listener disabled by default to avoid getUpdates conflicts.
-        # Use PIRANEWZ_API_URL to fetch sentiment/news from the external Piranewz API.
+        # The Telegram channel reader uses the SAME bot token as the main bot,
+        # which causes getUpdates conflicts (only one poller per token allowed).
+        # It is opt-in via PIRANEWZ_TG_READER=true and requires a separate token.
+        # Default: scrape the public channel page t.me/s/<channel> — no token,
+        # no conflict, works even if the bot is not in the channel.
         self.piranewz_reader = PiranewzTelegramReader(config)
-        if not config.piranewz_api_url:
+        if not config.piranewz_tg_reader_enabled:
             self.piranewz_reader.enabled = False
+        self.piranewz_scraper = PiranewzScraper(config)
         self.multi_asset_feed = MultiAssetPriceFeed(
             coingecko_api_key=config.coingecko_api_key,
             cmc_api_key=config.coinmarketcap_api_key,
@@ -91,6 +96,8 @@ class TradingEngine:
         self._last_groq_report_cycle: int = 0
         self.groq_reports: list[dict[str, Any]] = []
         self.manual_signals: list[dict[str, Any]] = []
+        self._sampler_task: asyncio.Task | None = None
+        self._next_cycle_at: float = 0.0  # monotonic ts of next trading cycle
 
     async def start(self) -> None:
         """Start Telegram bot and initialize watchlist in the background."""
@@ -105,7 +112,7 @@ class TradingEngine:
         if self.watchlist:
             logger.info("Loaded %s persisted watchlist pairs", len(self.watchlist))
         asyncio.create_task(self._refresh_watchlist())
-        asyncio.create_task(self._price_sampler_loop())
+        self._sampler_task = asyncio.create_task(self._price_sampler_loop())
         await self.telegram.send_alert(
             f"⚡ *AIOud Trader* démarré.\nMode: *{'PAPER' if self.config.paper_trading else 'REAL'}*\n"
             "Scan multi-actifs Solana actif."
@@ -117,6 +124,12 @@ class TradingEngine:
     async def stop(self) -> None:
         """Stop the engine gracefully."""
         self.running = False
+        if self._sampler_task:
+            self._sampler_task.cancel()
+            try:
+                await self._sampler_task
+            except asyncio.CancelledError:
+                pass
         if self.piranewz_reader.enabled:
             await self.piranewz_reader.stop()
         await self.telegram.send_alert("🛑 *AIOud Trader* arrêté.")
@@ -250,7 +263,13 @@ class TradingEngine:
             if self.piranewz_reader.enabled:
                 piranewz_sentiment = self.piranewz_reader.get_sentiment_summary(hours=24)
             else:
-                piranewz_sentiment = {"overall": "neutral", "counts": {"bullish": 0, "bearish": 0, "neutral": 0}, "symbol_sentiment": {}, "signals": []}
+                # Default path: scrape the public channel page (no token needed).
+                # Falls back to HTTP API headlines if the scrape returns nothing.
+                piranewz_sentiment = await asyncio.to_thread(
+                    self.piranewz_scraper.get_sentiment_summary, 24
+                )
+                if not piranewz_sentiment.get("signals") and news_articles:
+                    piranewz_sentiment = self.piranewz.summarize_sentiment(news_articles)
 
             watchlist_state = [
                 {
@@ -792,7 +811,7 @@ class TradingEngine:
             "open_positions": len(self.risk.positions),
             "daily_pnl": -self.risk.daily_loss_usd,
             "unrealized_pnl": 0.0,
-            "next_scan_seconds": 120,
+            "next_scan_seconds": max(0, int(self._next_cycle_at - time.monotonic())),
             "new_tokens": getattr(self.scanner, "new_tokens", [])[-10:],
             "scanner": {
                 "discovery_enabled": self.scanner.discovery_enabled,
@@ -838,8 +857,12 @@ class TradingEngine:
             "logs": self.logs[-50:],
             "telegram": self.telegram_messages[-20:],
             "groq_reports": self.groq_reports[-5:],
-            "piranewz_configured": bool(self.config.piranewz_api_url) or self.piranewz_reader.enabled,
-            "piranewz_sentiment": self.piranewz_reader.get_sentiment_summary(hours=24),
+            "piranewz_configured": bool(self.config.piranewz_api_url) or self.piranewz_reader.enabled or True,
+            "piranewz_sentiment": (
+                self.piranewz_reader.get_sentiment_summary(hours=24)
+                if self.piranewz_reader.enabled
+                else self.piranewz_scraper.get_sentiment_summary(hours=24)
+            ),
             "manual_signals_enabled": self.config.manual_signal_enabled,
             "manual_signals": self.manual_signals[-10:],
         }
@@ -865,6 +888,7 @@ class TradingEngine:
 
             # Sleep in small chunks so stop_event remains responsive and we log liveness.
             total_sleep = scan_interval_minutes * 60
+            self._next_cycle_at = time.monotonic() + total_sleep
             chunk = 10
             for _ in range(total_sleep // chunk):
                 if not self.running:

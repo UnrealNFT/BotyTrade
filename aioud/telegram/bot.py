@@ -395,22 +395,38 @@ class TelegramBot:
         if not self.enabled or not self.application:
             logger.info("Telegram bot is disabled, skipping start.")
             return
-        if not self.application:
-            return
         await self.application.initialize()
         await self.application.start()
         if not self.application.updater:
             return
+        # Kill any leftover webhook from a previous run so polling can start.
         try:
-            await self.application.updater.start_polling(
-                drop_pending_updates=True,
-                poll_interval=3.0,
-                timeout=30,
-            )
-            logger.info("Telegram bot started (authorized: @%s)", self.config.telegram_authorized_username or "anyone")
+            await self.application.bot.delete_webhook(drop_pending_updates=True)
         except Exception as exc:
-            logger.error("Failed to start Telegram polling: %s", exc)
-            self.enabled = False
+            logger.warning("delete_webhook failed: %s", exc)
+        # Retry polling a few times: during a Render deploy the OLD instance may
+        # still be polling for a few seconds, causing a getUpdates Conflict.
+        for attempt in range(1, 6):
+            try:
+                await self.application.updater.start_polling(
+                    drop_pending_updates=True,
+                    poll_interval=3.0,
+                    timeout=30,
+                )
+                logger.info("Telegram bot started (authorized: @%s)", self.config.telegram_authorized_username or "anyone")
+                return
+            except Exception as exc:
+                if "Conflict" in type(exc).__name__ or "Conflict" in str(exc):
+                    logger.warning(
+                        "Telegram polling conflict (old instance still running?), retry %s/5 in 5s",
+                        attempt,
+                    )
+                    await asyncio.sleep(5)
+                else:
+                    logger.error("Failed to start Telegram polling: %s", exc)
+                    break
+        logger.error("Telegram polling disabled after repeated conflicts.")
+        self.enabled = False
 
     async def stop(self) -> None:
         """Stop the bot."""
