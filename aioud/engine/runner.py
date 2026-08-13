@@ -700,6 +700,55 @@ class TradingEngine:
         """Cached SOL price in USD; updated during trading cycles only."""
         return self._cached_sol_price_usd
 
+    async def close_position_by_symbol(self, symbol: str) -> dict[str, Any] | None:
+        """Manually close one open position by symbol: sell on-chain + update state.
+
+        Returns the recorded trade dict, or None if no such position.
+        """
+        symbol = symbol.upper()
+        pos = next(
+            (p for p in self.risk.positions.values() if p.symbol.upper() == symbol),
+            None,
+        )
+        if not pos:
+            return None
+        try:
+            data = await asyncio.to_thread(self.feed.fetch_price, pos.mint)
+            current_price = data["price"]
+        except Exception:
+            current_price = pos.entry_price
+
+        # Sell the tokens on-chain (no-op in paper mode).
+        sell_value = pos.amount * current_price
+        result = await asyncio.to_thread(self.solana.sell_token, pos.mint, sell_value)
+        trade = self.risk.force_close(pos.mint, current_price, reason="Fermeture manuelle (/close)")
+        if trade:
+            await self.telegram.send_trade_close(
+                symbol=pos.symbol,
+                entry_price=pos.entry_price,
+                exit_price=current_price,
+                pnl_pct=trade["pnl_pct"],
+                pnl_usd=trade["pnl_usd"],
+                reason="🔒 Fermeture manuelle",
+                duration_min=int(trade["duration_min"]),
+            )
+            if not result.success:
+                await self.telegram.send_alert(
+                    f"⚠️ Vente on-chain de {pos.symbol} échouée: {result.error}\n"
+                    f"(la position est marquée fermée dans le suivi)"
+                )
+        return trade
+
+    async def close_all_positions(self) -> int:
+        """Panic: close every open position. Returns the number closed."""
+        symbols = [p.symbol for p in list(self.risk.positions.values())]
+        closed = 0
+        for sym in symbols:
+            trade = await self.close_position_by_symbol(sym)
+            if trade:
+                closed += 1
+        return closed
+
     def _update_cached_sol_price(self) -> None:
         """Refresh cached SOL price from the feed (call only in cycles/threads)."""
         price = self.feed.fetch_sol_price()

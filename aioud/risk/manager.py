@@ -366,6 +366,13 @@ class RiskManager:
         self.cooldown_until[pos.mint] = datetime.now(timezone.utc) + timedelta(minutes=15)
         return trade
 
+    def force_close(self, mint: str, exit_price: float, reason: str = "Fermeture manuelle") -> dict[str, Any] | None:
+        """Manually close a position and record the trade. Returns the trade or None."""
+        pos = self.positions.get(mint)
+        if not pos:
+            return None
+        return self._record_close(pos, exit_price, reason)
+
     def check_exit(self, mint: str, current_price: float) -> dict[str, Any]:
         """Check if a position should be closed or partially taken profit.
 

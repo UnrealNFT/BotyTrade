@@ -73,6 +73,7 @@ class TelegramBot:
             "balance": self._cmd_balance,
             "add": self._cmd_add,
             "remove": self._cmd_remove,
+            "close": self._cmd_close,
             "watchlist": self._cmd_watchlist,
             "chatid": self._cmd_chatid,
         }.items():
@@ -100,7 +101,7 @@ class TelegramBot:
         await self._reply(
             update,
             "⚡ *AIOud Trader* est en ligne.\n"
-            "Commandes: /status /balance /pnl /positions /panic /add /remove /watchlist /chatid",
+            "Commandes: /status /balance /pnl /positions /close /panic /add /remove /watchlist /chatid",
         )
 
     def _set_engine(self, engine) -> None:
@@ -167,11 +168,53 @@ class TelegramBot:
         if not self._is_authorized(update):
             await self._deny(update)
             return
-        await self._reply(
-            update,
-            "🛑 *PANIC* — fermeture de toutes les positions demandée.\n"
-            "(implémentation manuelle via dashboard ou redémarrage)",
-        )
+        engine = getattr(self, "engine", None)
+        if not engine:
+            await self._reply(update, "🤖 Bot pas encore prêt.")
+            return
+        count = len(engine.risk.positions)
+        if count == 0:
+            await self._reply(update, "ℹ️ Aucune position ouverte à fermer.")
+            return
+        await self._reply(update, f"🛑 *PANIC* — fermeture de {count} position(s) en cours...")
+        try:
+            closed = await engine.close_all_positions()
+            await self._reply(
+                update,
+                f"✅ *Panic terminé* — {closed}/{count} position(s) fermée(s).\n"
+                f"🖥️ [Dashboard]({self._dashboard_url()})",
+            )
+        except Exception as exc:
+            await self._reply(update, f"⚠️ Erreur panic: {exc}")
+
+    async def _cmd_close(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Close a single position by symbol: /close HAIRINU"""
+        if not self._is_authorized(update):
+            await self._deny(update)
+            return
+        engine = getattr(self, "engine", None)
+        if not engine:
+            await self._reply(update, "🤖 Bot pas encore prêt.")
+            return
+        args = (context.args or [])
+        if not args:
+            open_syms = ", ".join(p.symbol for p in engine.risk.positions.values()) or "aucune"
+            await self._reply(
+                update,
+                f"Usage: `/close SYMBOLE`\nPositions ouvertes: {open_syms}",
+            )
+            return
+        symbol = args[0].upper()
+        await self._reply(update, f"🔒 Fermeture de *{symbol}* en cours...")
+        try:
+            trade = await engine.close_position_by_symbol(symbol)
+            if trade:
+                # send_trade_close already fired inside close_position_by_symbol.
+                pass
+            else:
+                await self._reply(update, f"ℹ️ Aucune position ouverte sur *{symbol}*.")
+        except Exception as exc:
+            await self._reply(update, f"⚠️ Erreur fermeture {symbol}: {exc}")
 
     async def _cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_authorized(update):
