@@ -715,12 +715,23 @@ class TradingEngine:
         try:
             data = await asyncio.to_thread(self.feed.fetch_price, pos.mint)
             current_price = data["price"]
-        except Exception:
+        except Exception as exc:
+            logger.warning("close %s: price fetch failed (%s), using entry", symbol, exc)
             current_price = pos.entry_price
 
-        # Sell the tokens on-chain (no-op in paper mode).
+        # Sell the tokens on-chain. CRITICAL: never let a failed on-chain sell
+        # prevent marking the position closed — otherwise the bot keeps a phantom
+        # position it will retry selling forever. We close the state first.
         sell_value = pos.amount * current_price
-        result = await asyncio.to_thread(self.solana.sell_token, pos.mint, sell_value)
+        sell_error = ""
+        try:
+            result = await asyncio.to_thread(self.solana.sell_token, pos.mint, sell_value)
+            if not result.success:
+                sell_error = result.error
+        except Exception as exc:
+            sell_error = str(exc)
+            logger.warning("close %s: on-chain sell raised: %s", symbol, exc)
+
         trade = self.risk.force_close(pos.mint, current_price, reason="Fermeture manuelle (/close)")
         if trade:
             await self.telegram.send_trade_close(
@@ -732,10 +743,10 @@ class TradingEngine:
                 reason="🔒 Fermeture manuelle",
                 duration_min=int(trade["duration_min"]),
             )
-            if not result.success:
+            if sell_error:
                 await self.telegram.send_alert(
-                    f"⚠️ Vente on-chain de {pos.symbol} échouée: {result.error}\n"
-                    f"(la position est marquée fermée dans le suivi)"
+                    f"⚠️ Vente on-chain de {pos.symbol} échouée: {sell_error}\n"
+                    f"(la position est marquée fermée dans le suivi — vérifie ton wallet)"
                 )
         return trade
 

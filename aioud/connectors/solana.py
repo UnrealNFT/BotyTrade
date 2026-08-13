@@ -122,7 +122,9 @@ class SolanaConnector(_MintConstants):
             f"?inputMint={input_mint}"
             f"&outputMint={output_mint}"
             f"&amount={amount_lamports}"
-            f"&slippageBps=500"
+            # Higher slippage for illiquid memecoins: 5% was failing with
+            # Jupiter Custom(6025) on low-liquidity pump.fun tokens.
+            f"&slippageBps=1500"
         )
         response = requests.get(url, timeout=30)
         response.raise_for_status()

@@ -81,12 +81,23 @@ class TelegramBot:
                 self.application.add_handler(CommandHandler(cmd, handler))
 
     async def _reply(self, update: Update, text: str, **kwargs) -> None:
-        """Safely reply to a Telegram message."""
+        """Safely reply to a Telegram message.
+
+        Falls back to plain text if Markdown parsing fails (error messages often
+        contain raw RPC/program logs with unescaped Markdown chars like _ or [).
+        """
         message = update.message
         if not message:
             logger.warning("Cannot reply: update.message is None")
             return
-        await message.reply_text(text, parse_mode="Markdown", **kwargs)
+        try:
+            await message.reply_text(text, parse_mode="Markdown", **kwargs)
+        except Exception as exc:
+            logger.warning("Markdown reply failed (%s); retrying as plain text", exc)
+            try:
+                await message.reply_text(text, **kwargs)
+            except Exception as exc2:
+                logger.warning("Plain reply also failed: %s", exc2)
 
     async def _deny(self, update: Update) -> None:
         user = update.effective_user
@@ -214,7 +225,9 @@ class TelegramBot:
             else:
                 await self._reply(update, f"ℹ️ Aucune position ouverte sur *{symbol}*.")
         except Exception as exc:
-            await self._reply(update, f"⚠️ Erreur fermeture {symbol}: {exc}")
+            # Truncate + plain text: error payloads (RPC logs) break Markdown.
+            short = str(exc)[:300]
+            await self._reply(update, f"⚠️ Erreur fermeture {symbol}: {short}")
 
     async def _cmd_balance(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not self._is_authorized(update):
