@@ -117,7 +117,7 @@ class Config:
             price_sampler_interval_seconds=float(
                 os.environ.get("PRICE_SAMPLER_INTERVAL_SECONDS", "60")
             ),
-            max_pairs_per_cycle=int(os.environ.get("MAX_PAIRS_PER_CYCLE", "5")),
+            max_pairs_per_cycle=int(os.environ.get("MAX_PAIRS_PER_CYCLE", "20")),
             # Candle warmup: seed a new token with synthetic candles when it has
             # less history than the strategy needs, so it becomes tradable fast.
             candle_warmup_enabled=os.environ.get("CANDLE_WARMUP_ENABLED", "true").lower()

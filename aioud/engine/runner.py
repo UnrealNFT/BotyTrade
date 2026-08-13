@@ -948,16 +948,15 @@ class TradingEngine:
                     self._log("buy", f"TEST PAPER: opened {first.symbol} @ {price}")
                     logger.info("Force paper test trade executed for %s", first.symbol)
 
-            # Evaluate at most N pairs per cycle (round-robin) so a slow price
-            # fetch on one token cannot stall the whole cycle / dashboard.
+            # Evaluate ALL watchlist pairs each cycle. The price snapshot is a
+            # single batched DexScreener call (up to 30 mints) and the fallbacks
+            # are parallelised, so evaluating 20 pairs costs about the same as 5.
+            # This makes the bot far more reactive: every token is analysed every
+            # cycle instead of waiting ~20min for its round-robin turn.
             max_per_cycle = max(1, self.config.max_pairs_per_cycle)
-            start_idx = self._cycle_count % max(1, len(self.watchlist))
-            ordered = self.watchlist[start_idx:] + self.watchlist[:start_idx]
-            to_eval = [p for p in ordered if p.mint not in self.risk.positions][:max_per_cycle]
+            to_eval = [p for p in self.watchlist if p.mint not in self.risk.positions][:max_per_cycle]
 
-            # Snapshot ONLY the pairs we're about to evaluate. The background
-            # 60s sampler already keeps all watchlist candles fresh, so there's
-            # no need to fetch every mint here — that's what made cycles take 250s.
+            # Snapshot the pairs we're about to evaluate (single batched call).
             eval_mints = [p.mint for p in to_eval]
             if eval_mints:
                 await asyncio.to_thread(self.feed.snapshot_batch, eval_mints)
