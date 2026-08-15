@@ -929,6 +929,51 @@ class TradingEngine:
                     f"Minimum pour trader: `${self.config.min_usdc_balance_to_trade}`\n"
                     f"Le bot ne peut plus ouvrir de positions."
                 )
+            # Auto-rebalance: if we're out of USDC but hold excess SOL beyond the
+            # fee reserve, swap some SOL back to USDC so the bot can keep trading
+            # instead of stalling. All sales already settle in USDC; this just
+            # tops up the trading capital from the SOL profits.
+            await self._rebalance_sol_to_usdc(sol_balance, usdc_balance)
+
+    async def _rebalance_sol_to_usdc(self, sol_balance: float, usdc_balance: float) -> None:
+        """Swap excess SOL to USDC when USDC is too low to trade.
+
+        Keeps the fee reserve intact (min_sol_balance_for_fees) and only converts
+        the surplus. This is what keeps the wallet balanced: profits swept to SOL
+        can be recycled back into USDC trading capital automatically.
+        """
+        if self.config.paper_trading:
+            return
+        try:
+            sol_price = self._sol_price_usd
+            fee_reserve = self.config.min_sol_balance_for_fees
+            # Surplus SOL available to convert (keep the fee reserve untouched).
+            surplus_sol = sol_balance - fee_reserve
+            if surplus_sol <= 0:
+                return
+            # Convert enough to reach a comfortable USDC buffer (2x min trade),
+            # capped so we never drain the fee reserve.
+            target_usdc = max(self.config.min_usdc_balance_to_trade * 2, self.config.mode2_position_usd)
+            needed_usd = target_usdc - usdc_balance
+            if needed_usd <= 0:
+                return
+            sol_to_spend = min(surplus_sol, needed_usd / sol_price if sol_price else 0)
+            if sol_to_spend <= 0.001:  # not worth a swap
+                return
+            result = await asyncio.to_thread(
+                self.solana.swap, self.solana.SOL_MINT, self.solana.USDC_MINT, sol_to_spend, 9
+            )
+            if result.success:
+                msg = (
+                    f"⚖️ *Rééquilibrage auto*\n"
+                    f"Swap `{sol_to_spend:.4f} SOL` → USDC\n"
+                    f"Raison: USDC trop faible (`${usdc_balance:.2f}`), recharge du capital de trading."
+                )
+                logger.info(msg)
+                await self.telegram.send_alert(msg)
+                self._last_sol_balance = sol_balance - sol_to_spend
+        except Exception as exc:
+            logger.warning("Rebalance SOL->USDC failed: %s", exc)
 
     async def _send_status_report(self) -> None:
         """Send a full status snapshot to Telegram: balances, positions, PnL, watchlist.
