@@ -74,6 +74,10 @@ class TelegramBot:
             "add": self._cmd_add,
             "remove": self._cmd_remove,
             "close": self._cmd_close,
+            "mode1": self._cmd_mode1,
+            "mode2": self._cmd_mode2,
+            "buy": self._cmd_buy,
+            "sweep": self._cmd_sweep,
             "watchlist": self._cmd_watchlist,
             "chatid": self._cmd_chatid,
         }.items():
@@ -112,8 +116,84 @@ class TelegramBot:
         await self._reply(
             update,
             "⚡ *AIOud Trader* est en ligne.\n"
-            "Commandes: /status /balance /pnl /positions /close /panic /add /remove /watchlist /chatid",
+            "Commandes: /status /balance /pnl /positions /close /panic\n"
+            "/mode1 /mode2 /buy /sweep /add /remove /watchlist /chatid",
         )
+
+    async def _cmd_mode1(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Switch to Mode 1: multi-TP ladder, ATR stops, percentage sizing."""
+        if not self._is_authorized(update):
+            await self._deny(update)
+            return
+        engine = getattr(self, "engine", None)
+        if not engine:
+            await self._reply(update, "🤖 Bot pas encore prêt.")
+            return
+        engine.trading_mode = 1
+        engine.risk.trading_mode = 1
+        await self._reply(
+            update,
+            "📈 *Mode 1 activé*\n"
+            "Sizing: % du capital | Sorties: ladder TP1/2/3 + break-even + trailing",
+        )
+
+    async def _cmd_mode2(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Switch to Mode 2: flat $5 positions, single +5% TP / -$0.10 SL, 1h max."""
+        if not self._is_authorized(update):
+            await self._deny(update)
+            return
+        engine = getattr(self, "engine", None)
+        if not engine:
+            await self._reply(update, "🤖 Bot pas encore prêt.")
+            return
+        engine.trading_mode = 2
+        engine.risk.trading_mode = 2
+        c = engine.config
+        await self._reply(
+            update,
+            f"⚡ *Mode 2 activé*\n"
+            f"Position: `${c.mode2_position_usd:.0f}` fixe | "
+            f"TP: `+{c.mode2_tp_pct*100:.0f}%` | SL: `-${c.mode2_sl_usd:.2f}`\n"
+            f"⏱️ Time-stop: `{c.mode2_max_hold_minutes:.0f}min` max par position (auto-close)",
+        )
+
+    async def _cmd_buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Buy a token by contract address: /buy <mint>"""
+        if not self._is_authorized(update):
+            await self._deny(update)
+            return
+        engine = getattr(self, "engine", None)
+        if not engine:
+            await self._reply(update, "🤖 Bot pas encore prêt.")
+            return
+        args = (context.args or [])
+        if not args:
+            await self._reply(update, "Usage: `/buy <adresse_contrat>`")
+            return
+        mint = args[0].strip()
+        await self._reply(update, f"🔍 Recherche du token `{mint[:12]}...`")
+        try:
+            ok = await engine.buy_by_contract(mint)
+            if not ok:
+                await self._reply(update, "❌ Token introuvable ou achat impossible.")
+        except Exception as exc:
+            await self._reply(update, f"⚠️ Erreur achat: {str(exc)[:200]}")
+
+    async def _cmd_sweep(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Sweep token profits to SOL, keep only SOL + USDC in the wallet."""
+        if not self._is_authorized(update):
+            await self._deny(update)
+            return
+        engine = getattr(self, "engine", None)
+        if not engine:
+            await self._reply(update, "🤖 Bot pas encore prêt.")
+            return
+        await self._reply(update, "🧹 Sweep des profits vers SOL en cours...")
+        try:
+            n = await engine.sweep_profits_to_sol()
+            await self._reply(update, f"✅ Sweep terminé: {n} token(s) convertis en SOL.")
+        except Exception as exc:
+            await self._reply(update, f"⚠️ Erreur sweep: {str(exc)[:200]}")
 
     def _set_engine(self, engine) -> None:
         """Allow commands to query the live trading engine."""

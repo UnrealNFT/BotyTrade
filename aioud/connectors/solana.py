@@ -170,6 +170,21 @@ class SolanaConnector(_MintConstants):
         amount_lamports = int(amount_usd * (10**input_decimals))
         quote = self.get_price(input_mint, output_mint, amount_lamports)
         logger.info("Jupiter quote received: outAmount=%s", quote.get("outAmount", "unknown"))
+        return self._execute_quote(quote, input_mint, output_mint, amount_usd, input_decimals, output_decimals)
+
+    def _execute_quote(
+        self,
+        quote: dict,
+        input_mint: str,
+        output_mint: str,
+        amount_in: float,
+        input_decimals: int,
+        output_decimals: int | None = None,
+    ) -> SwapResult:
+        """Execute a Jupiter quote: build, sign, send, confirm."""
+        if output_decimals is None:
+            output_decimals = self._get_token_decimals(output_mint)
+        amount_lamports = int(amount_in * (10**input_decimals))
 
         owner_pubkey = self._owner_pubkey()
         swap_request = {
@@ -220,14 +235,14 @@ class SolanaConnector(_MintConstants):
                 success=False,
                 signature=signature,
                 error="Transaction not confirmed (dropped)",
-                amount_in=amount_usd,
+                amount_in=amount_in,
             )
 
         out_amount = float(quote.get("outAmount", 0))
         return SwapResult(
             success=True,
             signature=signature,
-            amount_in=amount_usd,
+            amount_in=amount_in,
             amount_out=out_amount / 10**output_decimals,
             price=out_amount / amount_lamports if amount_lamports else 0.0,
         )
@@ -317,3 +332,55 @@ class SolanaConnector(_MintConstants):
             logger.warning("RPC get_token_balance failed on %s for %s: %s", self.rpc._provider.endpoint_uri, mint, exc)
             self._switch_rpc()
             raise
+
+    def get_all_token_balances(self) -> list[dict[str, Any]]:
+        """Return all non-zero SPL token balances in the wallet.
+
+        Used by the profit-sweep to find leftover token profits to convert
+        back to SOL, keeping the wallet in SOL + USDC only.
+        """
+        results: list[dict[str, Any]] = []
+        try:
+            owner_pubkey = self._owner_pubkey()
+            # Query ALL token accounts owned by the wallet (not filtered by mint).
+            from solana.rpc.types import TokenAccountOpts
+            resp = self.rpc.get_token_accounts_by_owner_json_parsed(
+                owner_pubkey,
+                TokenAccountOpts(program_id=Pubkey.from_string(
+                    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                )),
+            ).value
+            for account in resp or []:
+                parsed = account.account.data.parsed
+                if not isinstance(parsed, dict):
+                    continue
+                info = parsed.get("info")
+                if not isinstance(info, dict):
+                    continue
+                mint = info.get("mint")
+                token_amount = info.get("tokenAmount", {})
+                ui_amount = token_amount.get("uiAmount")
+                if not mint or not ui_amount or float(ui_amount) <= 0:
+                    continue
+                results.append({"mint": str(mint), "amount": float(ui_amount)})
+        except Exception as exc:
+            logger.warning("get_all_token_balances failed: %s", exc)
+        return results
+
+    def swap_to_sol(self, input_mint: str, amount_tokens: float) -> SwapResult:
+        """Swap a token balance back to SOL (profit sweep)."""
+        # We sell the token for SOL. Jupiter routes token->SOL directly.
+        if self.paper:
+            logger.info("PAPER sweep: %s -> SOL (%.4f tokens)", input_mint, amount_tokens)
+            return SwapResult(success=True, signature="paper", amount_in=amount_tokens)
+        # Reuse swap() but target SOL. Amount is in TOKEN units, so we convert
+        # using the token's decimals via a direct quote on the token amount.
+        try:
+            input_decimals = self._get_token_decimals(input_mint)
+            amount_lamports = int(amount_tokens * (10 ** input_decimals))
+            quote = self.get_price(input_mint, SOL_MINT, amount_lamports)
+            # Execute the swap via the shared path.
+            return self._execute_quote(quote, input_mint, SOL_MINT, amount_tokens, input_decimals)
+        except Exception as exc:
+            logger.error("swap_to_sol failed for %s: %s", input_mint, exc)
+            return SwapResult(success=False, error=str(exc), amount_in=amount_tokens)

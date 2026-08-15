@@ -98,6 +98,12 @@ class TradingEngine:
         self.piranewz_reader = PiranewzTelegramReader(config)
         if not config.piranewz_tg_reader_enabled:
             self.piranewz_reader.enabled = False
+        # Multi-channel discovery scraper (SOL TRENDING, Detective Shitcoin, ...).
+        from aioud.data.discovery_scraper import DiscoveryScraper
+        channels = [c.strip() for c in config.tg_discovery_channels.split(",") if c.strip()]
+        self.discovery_scraper = DiscoveryScraper(channels)
+        # Active trading mode (1 or 2). Switched at runtime via /mode1 /mode2.
+        self.trading_mode = config.trading_mode
         self.piranewz_scraper = PiranewzScraper(config)
         self.multi_asset_feed = MultiAssetPriceFeed(
             coingecko_api_key=config.coingecko_api_key,
@@ -635,13 +641,19 @@ class TradingEngine:
             return
 
         levels = self.risk.compute_exit_levels(price, atr=atr)
-        # Percentage-based sizing: position = max_position_pct of total capital,
-        # capped by TRADING_AMOUNT_USD (now a max-per-trade ceiling).
-        amount_usd = self.risk.compute_position_size_usd(
-            capital_sol=sol_balance,
-            sol_price=price if pair.symbol == "SOL" else self._sol_price_usd,
-            usdc_balance=usdc_balance,
-        )
+        # Sizing: Mode 2 uses a fixed flat amount ($5); Mode 1 uses the
+        # percentage-of-capital sizing (max_position_pct of capital).
+        if self.trading_mode == 2:
+            amount_usd = self.config.mode2_position_usd
+        else:
+            amount_usd = self.risk.compute_position_size_usd(
+                capital_sol=sol_balance,
+                sol_price=price if pair.symbol == "SOL" else self._sol_price_usd,
+                usdc_balance=usdc_balance,
+            )
+        # Sync the active mode into the risk manager so check_exit applies the
+        # right rules (Mode 2: single +5% TP / -$0.10 SL / 1h hard time-stop).
+        self.risk.trading_mode = self.trading_mode
 
         result = await asyncio.to_thread(self.solana.buy_token, pair.mint, amount_usd)
         if not result.success:
@@ -759,6 +771,70 @@ class TradingEngine:
             if trade:
                 closed += 1
         return closed
+
+    async def buy_by_contract(self, mint: str) -> bool:
+        """Manually buy a token by its contract address (/buy <mint>).
+
+        Looks up the token, opens a position using the ACTIVE mode's sizing,
+        and guards against duplicates (no double position on the same mint).
+        """
+        if mint in self.risk.positions:
+            await self.telegram.send_alert("ℹ️ Position déjà ouverte sur ce token (pas de doublon).")
+            return False
+        pair = await asyncio.to_thread(self.add_pair, mint)
+        if not pair:
+            return False
+        try:
+            data = await asyncio.to_thread(self.feed.fetch_price, mint)
+            price = data["price"]
+        except Exception:
+            price = pair.price_usd or 0.0
+        if price <= 0:
+            await self.telegram.send_alert(f"❌ Prix indisponible pour {pair.symbol}.")
+            return False
+        await self._open_position(
+            pair, price, score=100, reason="🛒 Achat manuel /buy", atr=0.0
+        )
+        return True
+
+    async def sweep_profits_to_sol(self) -> int:
+        """Convert token profits back to SOL, keeping the wallet in SOL + USDC.
+
+        Strategy: the initial stake of a winning trade returns to USDC, while
+        the PROFIT portion is swapped to SOL. For closed positions this is a
+        no-op; for the wallet it sweeps any non-USDC token balances (profits
+        left in tokens) into SOL so the wallet only ever holds SOL + USDC.
+        Returns the number of tokens swept.
+        """
+        if not self.config.profit_sweep_enabled:
+            return 0
+        swept = 0
+        try:
+            tokens = await asyncio.to_thread(self.solana.get_all_token_balances)
+        except Exception as exc:
+            logger.warning("Sweep: cannot list token balances: %s", exc)
+            return 0
+        for tok in tokens:
+            mint = tok.get("mint")
+            amount = tok.get("amount", 0.0)
+            if not mint or amount <= 0:
+                continue
+            if mint == self.solana.USDC_MINT:
+                continue  # keep USDC
+            # Skip tokens we still hold an open position on.
+            if mint in self.risk.positions:
+                continue
+            try:
+                # Swap the whole token balance back to SOL (profit sweep).
+                result = await asyncio.to_thread(
+                    self.solana.swap_to_sol, mint, amount
+                )
+                if result.success:
+                    swept += 1
+                    logger.info("Swept %s (%s) -> SOL", tok.get('symbol', mint[:8]), amount)
+            except Exception as exc:
+                logger.warning("Sweep failed for %s: %s", mint, exc)
+        return swept
 
     def _update_cached_sol_price(self) -> None:
         """Refresh cached SOL price from the feed (call only in cycles/threads)."""

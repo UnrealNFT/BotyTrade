@@ -1,0 +1,30 @@
+- mettre 1H max par position, auto close. 
+
+-Le bot ne doit pas hold, certaine position sont en cours depuis plusieurs jours, ici le bot ne doit pas hold, Nous voulons que Solana / USDC et les positions en cours, s’assurer de fermer toutes les positions Ce wallet ne doit garder que Solana et Usdc,
+
+- scanner plus que cinq paire. 
+
+Lire DT Shitcoin 
+Solana trending 
+Gmgn 
+Pumpfun avec la méthode 20% 10% s assurer que ya pas déjà position pas de doublon
+
+Le bot a tjr des usdc auto swap sol usdc / les bénéfices reste sur Solana, mais les position initiale revienne sur USDC, exemple j’ai mis 5$ sur RANA, j’ai TP et gagner 0,25$ alors ma position est de 0,25$ c’est 0,25 $ reste sur Solana c’est le bénéfice, et les 5$ reviennent sur USDC
+
+- possibilité d acheter /buy contract
+
+Pool de liquidity
+
+Positions égal 5 pourcent max
+
+Choix méthode, méthode 1 ( actuelle) 
+
+Méthode 2: 5$ par
+Positions, unique TP-> ( 5 pourcent )0,25$ 
+SL -> -0.10   
+
+tg sol trend https://t.me/SOLTRENDING
+
+detective Shitcoin
+
+t.me/detectives_shitcoins

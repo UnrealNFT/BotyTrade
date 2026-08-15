@@ -83,6 +83,20 @@ class Config:
     # Groq auto-buy: minimum AI confidence to auto-execute a buy suggestion.
     groq_auto_buy_min_confidence: int
 
+    # Trading mode: 1 = current (multi-TP ladder, ATR stops), 2 = flat $5
+    # positions with a single +5% TP / -0.10$ SL and a hard 1h time-stop.
+    trading_mode: int
+    # Mode 2 parameters
+    mode2_position_usd: float
+    mode2_tp_pct: float        # single take-profit, e.g. 0.05 = +5%
+    mode2_sl_usd: float        # fixed dollar stop, e.g. 0.10 = -$0.10
+    mode2_max_hold_minutes: float  # hard auto-close after this age (1h)
+    # Wallet hygiene: keep only SOL + USDC, sweep token profits to SOL.
+    profit_sweep_enabled: bool
+    # Extra Telegram channels to scrape for new-token discovery (same method
+    # as the Piranewz web scraper). Comma-separated @handles.
+    tg_discovery_channels: str
+
     # Logging
     log_level: str
 
@@ -167,6 +181,16 @@ class Config:
             sniper_min_liquidity_usd=float(os.environ.get("SNIPER_MIN_LIQUIDITY_USD", "3000")),
             groq_auto_buy_min_confidence=int(
                 os.environ.get("GROQ_AUTO_BUY_MIN_CONFIDENCE", "40")
+            ),
+            trading_mode=int(os.environ.get("TRADING_MODE", "1")),
+            mode2_position_usd=float(os.environ.get("MODE2_POSITION_USD", "5")),
+            mode2_tp_pct=float(os.environ.get("MODE2_TP_PCT", "0.05")),
+            mode2_sl_usd=float(os.environ.get("MODE2_SL_USD", "0.10")),
+            mode2_max_hold_minutes=float(os.environ.get("MODE2_MAX_HOLD_MINUTES", "60")),
+            profit_sweep_enabled=os.environ.get("PROFIT_SWEEP_ENABLED", "true").lower()
+            in ("1", "true", "yes"),
+            tg_discovery_channels=os.environ.get(
+                "TG_DISCOVERY_CHANNELS", "@SOLTRENDING,@detectives_shitcoins"
             ),
             trappist_api_url=os.environ.get("TRAPPIST_API_URL", ""),
             trappist_api_key=os.environ.get("TRAPPIST_API_KEY", ""),

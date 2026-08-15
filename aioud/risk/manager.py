@@ -66,6 +66,9 @@ class RiskManager:
         self.cooldown_until: dict[str, datetime] = {}
         self.trade_history: list[dict[str, Any]] = []
         self.last_reject_reason: str = ""
+        # Active trading mode (1 or 2). The engine updates this at runtime when
+        # the user switches via /mode1 /mode2. Defaults to config value.
+        self.trading_mode: int = config.trading_mode
         self._load_state()
 
     @staticmethod
@@ -383,6 +386,31 @@ class RiskManager:
         pos = self.positions.get(mint)
         if not pos:
             return {"action": "none", "reason": "No position"}
+
+        # --- MODE 2: flat exits, no holding. ---
+        # Single take-profit (+5%), fixed dollar stop (-$0.10), and a HARD
+        # 1-hour time-stop: the bot never holds a position longer than that.
+        if self.trading_mode == 2:
+            if current_price > pos.highest_price:
+                pos.highest_price = current_price
+            age_min = (datetime.now(timezone.utc) - pos.opened_at).total_seconds() / 60
+            pnl_pct = pos.pnl_pct(current_price)
+            pnl_usd = pos.pnl_usd(current_price)
+            # Hard time-stop: auto-close after N minutes regardless of PnL.
+            if age_min >= self.config.mode2_max_hold_minutes:
+                trade = self._record_close(
+                    pos, current_price, f"Mode2 time-stop {int(age_min)}min (max {self.config.mode2_max_hold_minutes:.0f}min)"
+                )
+                return {"action": "close", **trade}
+            # Single take-profit +5%.
+            if pnl_pct >= self.config.mode2_tp_pct * 100:
+                trade = self._record_close(pos, current_price, f"Mode2 TP +{self.config.mode2_tp_pct*100:.0f}%")
+                return {"action": "close", **trade}
+            # Fixed dollar stop-loss (-$0.10).
+            if pnl_usd <= -abs(self.config.mode2_sl_usd):
+                trade = self._record_close(pos, current_price, f"Mode2 SL -${abs(self.config.mode2_sl_usd):.2f}")
+                return {"action": "close", **trade}
+            return {"action": "hold", "reason": f"Mode2 holding {pnl_pct:+.1f}% ({int(age_min)}min)"}
 
         # --- Sniper positions: single mechanical exit, no TP ladder. ---
         if pos.is_sniper:
