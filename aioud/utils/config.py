@@ -182,7 +182,7 @@ class Config:
             groq_auto_buy_min_confidence=int(
                 os.environ.get("GROQ_AUTO_BUY_MIN_CONFIDENCE", "40")
             ),
-            trading_mode=int(os.environ.get("TRADING_MODE", "1")),
+            trading_mode=int(os.environ.get("TRADING_MODE", "2")),
             mode2_position_usd=float(os.environ.get("MODE2_POSITION_USD", "5")),
             mode2_tp_pct=float(os.environ.get("MODE2_TP_PCT", "0.05")),
             mode2_sl_usd=float(os.environ.get("MODE2_SL_USD", "0.10")),
