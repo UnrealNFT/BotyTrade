@@ -1141,6 +1141,13 @@ class TradingEngine:
 
         state = {
             "paper_trading": self.config.paper_trading,
+            "trading_mode": self.trading_mode,
+            "mode2": {
+                "position_usd": self.config.mode2_position_usd,
+                "tp_pct": self.config.mode2_tp_pct,
+                "sl_usd": self.config.mode2_sl_usd,
+                "max_hold_minutes": self.config.mode2_max_hold_minutes,
+            },
             "sol_balance": sol_balance,
             "usdc_balance": usdc_balance,
             "sol_price_usd": self._sol_price_usd,

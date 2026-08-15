@@ -329,6 +329,7 @@
         </div>
       </div>
       <div class="status-pill"><span class="status-dot"></span><span id="mode-text">PAPER TRADING</span></div>
+      <div class="status-pill" id="mode2-pill" style="margin-left:8px;"><span>⚙️</span><span id="trading-mode-text">MODE 1</span></div>
     </div>
 
     <div class="quick-stats">
@@ -401,6 +402,16 @@
         <div class="metric"><span class="metric-label">Expectancy / trade</span><span class="value" id="perf-expectancy">—</span></div>
         <div class="metric"><span class="metric-label">PnL total</span><span class="value" id="perf-total">$0.00</span></div>
         <div class="metric"><span class="metric-label">Gain moy. / Perte moy.</span><span class="value" id="perf-avg">—</span></div>
+      </div>
+
+      <!-- Strategie active (Mode 1 / Mode 2) -->
+      <div class="card">
+        <h2><span class="icon">⚙️</span> Stratégie active</h2>
+        <div class="metric"><span class="metric-label">Mode</span><span class="value" id="strat-mode">Mode 1</span></div>
+        <div class="metric"><span class="metric-label">Position</span><span class="value" id="strat-position">—</span></div>
+        <div class="metric"><span class="metric-label">Take-profit</span><span class="value" id="strat-tp">—</span></div>
+        <div class="metric"><span class="metric-label">Stop-loss</span><span class="value" id="strat-sl">—</span></div>
+        <div class="metric"><span class="metric-label">Durée max</span><span class="value" id="strat-maxhold">—</span></div>
       </div>
 
       <!-- Positions -->
@@ -608,6 +619,13 @@
       // Top bar / quick stats
       const modeText = state.paper_trading ? 'PAPER TRADING' : 'REAL TRADING';
       document.getElementById('mode-text').textContent = modeText;
+      // Trading mode badge (Mode 1 / Mode 2) with Mode 2 parameters.
+      const tm = state.trading_mode || 1;
+      const tmEl = document.getElementById('trading-mode-text');
+      if (tmEl) {
+        tmEl.textContent = tm === 2 ? 'MODE 2' : 'MODE 1';
+        tmEl.parentElement.style.background = tm === 2 ? 'rgba(0,200,120,0.15)' : 'rgba(120,120,255,0.12)';
+      }
       document.getElementById('sol-balance').textContent = (state.sol_balance || 0).toFixed(4) + ' SOL';
       const usdcEl = document.getElementById('usdc-balance');
       usdcEl.textContent = '$' + (state.usdc_balance || 0).toFixed(2);
@@ -662,6 +680,27 @@
       document.getElementById('perf-avg').textContent = perf.trades
         ? `+$${(perf.avg_win_usd || 0).toFixed(2)} / -$${(perf.avg_loss_usd || 0).toFixed(2)}`
         : '—';
+
+      // Strategie panel: show active mode parameters.
+      const m2 = state.mode2 || {};
+      const stratMode = document.getElementById('strat-mode');
+      if (stratMode) {
+        if (tm === 2) {
+          stratMode.textContent = 'Mode 2 — flat';
+          stratMode.className = 'value positive';
+          document.getElementById('strat-position').textContent = '$' + (m2.position_usd || 5).toFixed(0) + ' fixe';
+          document.getElementById('strat-tp').textContent = '+' + ((m2.tp_pct || 0.05) * 100).toFixed(0) + '%';
+          document.getElementById('strat-sl').textContent = '-$' + (m2.sl_usd || 0.10).toFixed(2);
+          document.getElementById('strat-maxhold').textContent = (m2.max_hold_minutes || 60) + ' min (auto-close)';
+        } else {
+          stratMode.textContent = 'Mode 1 — ladder';
+          stratMode.className = 'value';
+          document.getElementById('strat-position').textContent = '% capital';
+          document.getElementById('strat-tp').textContent = 'TP1/2/3 + break-even';
+          document.getElementById('strat-sl').textContent = 'ATR adaptatif';
+          document.getElementById('strat-maxhold').textContent = '6h (stagnant)';
+        }
+      }
 
       // Watchlist
       const watchlist = state.watchlist || [];
