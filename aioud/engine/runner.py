@@ -160,8 +160,55 @@ class TradingEngine:
         )
         await self.telegram.stop()
 
+    async def _refresh_watchlist_mode2(self) -> None:
+        """Mode 2: build the watchlist EXCLUSIVELY from TG discovery channels.
+
+        Reads SOLTRENDING + Detective Shitcoin, resolves each hot ticker to a
+        real DexScreener pair, and keeps only tokens with real volume/momentum
+        (aggressive: these are tokens pumping RIGHT NOW on the channels).
+        """
+        try:
+            mentions = await asyncio.to_thread(
+                self.discovery_scraper.get_hot_tickers, 1, 20
+            )
+        except Exception as exc:
+            logger.warning("Mode2 discovery refresh failed: %s", exc)
+            return
+        if not mentions:
+            return
+        built: dict[str, TokenPair] = {}
+        for m in mentions:
+            if not m.symbol or len(m.symbol) < 2:
+                continue
+            try:
+                pair = await asyncio.to_thread(self.scanner.search_by_symbol, m.symbol)
+            except Exception:
+                pair = None
+            if not pair or pair.mint in self._removed_mints:
+                continue
+            # Aggressive filter: require real volume (momentum) and some liquidity
+            # so we can actually enter/exit. Mode 2 trades the hot momentum tokens.
+            if pair.liquidity_usd < 3000:
+                continue
+            if pair.volume_24h < 5000:
+                continue
+            built[pair.mint] = pair
+        if built:
+            self.watchlist = self._sort_and_cap_watchlist(built.values())
+            self.strategies = {
+                p.mint: SolanaScalper(symbol=f"{p.symbol}/{p.quote_symbol}")
+                for p in self.watchlist
+            }
+            self.watchlist_store.save(self.watchlist)
+            syms = ", ".join(p.symbol for p in self.watchlist[:10])
+            logger.info("Mode2 watchlist (TG): %s tokens — %s", len(self.watchlist), syms)
+
     async def _refresh_watchlist(self) -> None:
         """Refresh the list of tracked tokens in a background thread."""
+        # Mode 2 uses ONLY the TG discovery channels as its watchlist source.
+        if self.trading_mode == 2:
+            await self._refresh_watchlist_mode2()
+            return
         logger.info("Refreshing watchlist...")
         try:
             new_tokens: list[str] = []
@@ -1097,6 +1144,20 @@ class TradingEngine:
                 details = evaluation["details"]
                 price = evaluation["price"]
 
+                # --- MODE 2: aggressive momentum buy on TG-discovered tokens. ---
+                # These tokens are pumping RIGHT NOW on the channels, so we don't
+                # wait for a full technical score — we buy volume + positive price
+                # action directly, with the tight Mode 2 exits (5% TP / -$0.10 SL
+                # / 1h time-stop) to cut losers fast.
+                if self.trading_mode == 2:
+                    vol_spike = details.get("volume_spike") or 0
+                    pc = pair.price_change_24h or 0
+                    momentum = score >= 20 or vol_spike >= 1.3 or pc >= 5
+                    if momentum and signal != "sell":
+                        reason = f"📡 Mode2 momentum: vol {vol_spike:.1f}x, 24h {pc:+.0f}%"
+                        await self._open_position(pair, price, max(score, 50), reason, atr=details.get("atr", 0.0))
+                        continue
+
                 # Buy threshold lowered to 40: in a bearish/neutral market a 50+
                 # score is rare, so the bot almost never traded. 40 still requires
                 # multiple confirming indicators but catches real opportunities.
@@ -1147,6 +1208,12 @@ class TradingEngine:
                 "tp_pct": self.config.mode2_tp_pct,
                 "sl_usd": self.config.mode2_sl_usd,
                 "max_hold_minutes": self.config.mode2_max_hold_minutes,
+                # TG discovery channels feeding the Mode 2 watchlist.
+                "discovery_channels": self.discovery_scraper.channels,
+                "tg_tickers": [
+                    {"symbol": m.symbol, "channel": m.channel, "mentions": m.count}
+                    for m in self.discovery_scraper.get_hot_tickers(limit=10)
+                ],
             },
             "sol_balance": sol_balance,
             "usdc_balance": usdc_balance,

@@ -220,6 +220,26 @@ class SolanaScanner:
             reverse=True,
         )[: self.max_pairs_per_scan]
 
+    def search_by_symbol(self, symbol: str) -> TokenPair | None:
+        """Resolve a TG ticker (e.g. 'GUNICORN') to its most-liquid Solana pair.
+
+        Used by Mode 2: TG discovery channels give us a symbol, we resolve the
+        actual tradable token. Returns the highest-liquidity match, or None.
+        """
+        try:
+            results = self.search(symbol)
+        except Exception:
+            return None
+        if not results:
+            return None
+        # Prefer the pair whose symbol actually matches (case-insensitive),
+        # otherwise the most liquid result.
+        symbol_up = symbol.upper()
+        for p in results:
+            if p.symbol.upper() == symbol_up:
+                return p
+        return results[0]
+
     def _lookup_token(self, address: str) -> TokenPair | None:
         """Fetch the best Solana pair for a single token address."""
         try:

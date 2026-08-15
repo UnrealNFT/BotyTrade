@@ -414,6 +414,14 @@
         <div class="metric"><span class="metric-label">Durée max</span><span class="value" id="strat-maxhold">—</span></div>
       </div>
 
+      <!-- Mode 2: TG Discovery channels -->
+      <div class="card" id="mode2-card">
+        <h2><span class="icon">📡</span> Mode 2 — Discovery TG</h2>
+        <div class="metric"><span class="metric-label">Canaux</span><span class="value" id="m2-channels">—</span></div>
+        <div class="metric"><span class="metric-label">Tickers suivis</span><span class="value" id="m2-tickers-count">0</span></div>
+        <div id="m2-tickers" class="panel-scroll" style="margin-top:8px;font-size:12px;"></div>
+      </div>
+
       <!-- Positions -->
       <div class="card">
         <h2><span class="icon">🎯</span> Positions ouvertes</h2>
@@ -699,6 +707,21 @@
           document.getElementById('strat-tp').textContent = 'TP1/2/3 + break-even';
           document.getElementById('strat-sl').textContent = 'ATR adaptatif';
           document.getElementById('strat-maxhold').textContent = '6h (stagnant)';
+        }
+      }
+
+      // Mode 2 discovery panel: TG channels + hot tickers.
+      const m2Channels = document.getElementById('m2-channels');
+      if (m2Channels) {
+        const chans = m2.discovery_channels || [];
+        m2Channels.textContent = chans.length ? chans.join(', ') : '—';
+        const tickers = m2.tg_tickers || [];
+        document.getElementById('m2-tickers-count').textContent = tickers.length;
+        const list = document.getElementById('m2-tickers');
+        if (list) {
+          list.innerHTML = tickers.length
+            ? tickers.map(t => `<div>• <b>$${t.symbol}</b> <span class="muted">@${t.channel} ×${t.mentions}</span></div>`).join('')
+            : '<div class="muted">Aucun ticker détecté pour le moment</div>';
         }
       }
 
